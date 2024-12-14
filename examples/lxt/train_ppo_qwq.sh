@@ -43,9 +43,12 @@ python -m openrlhf.cli.train_ppo_ray \
     --vllm_num_engines 8 \
     --vllm_tensor_parallel_size 4 \
     --colocate_actor_ref \
-    --pretrain your-38b-model \
-    --remote_rm_url http://localhost:5000/get_reward \  # 使用远程RM
-    --save_path /path/to/save/checkpoint \
+    --pretrain /mnt/hwfile/llm-safety/models/InternVL2_5-QwQ-38B-v5 \
+    --remote_rm_url http://10.1.96.87:30000/get_reward \
+    --save_path /mnt/hwfile/llm-safety/checkpoints/InternVL2_5-QwQ-38B-v5-PPO-MetaMathQA \
+    --input_key "query" \
+    --reference_key "response" \
+    --apply_chat_template \
     --micro_train_batch_size 4 \
     --train_batch_size 128 \
     --micro_rollout_batch_size 8 \
@@ -58,9 +61,20 @@ python -m openrlhf.cli.train_ppo_ray \
     --actor_learning_rate 5e-7 \
     --critic_learning_rate 9e-6 \
     --init_kl_coef 0.01 \
-    --prompt_data your-prompt-dataset \
+    --prompt_data /mnt/hwfile/llm-safety/datasets/MetaMathQA/MetaMathQA-395K.json \
     --normalize_reward \
     --adam_offload \
     --flash_attn \
     --gradient_checkpointing \
-    --packing_samples
+    --packing_samples \
+    --max_norm 1.0 \
+    --eps_clip 0.2 \
+    --value_clip 0.2 \
+    --gamma 1.0 \
+    --lambd 0.95 \
+    --n_samples_per_prompt 1 \
+    --advantage_estimator gae \
+    --reward_clip_range 5 \
+    --wandb_project "ppo-training" \
+    --wandb_run_name "InternVL2_5-QwQ-38B-v5-ppo" \
+    --use_wandb true

@@ -35,34 +35,49 @@ class RewardModelProxy:
         self.pad_token = "<pad>"
         self.eos_token = "</s>"
         
-    def get_reward(self, queries):
+    def get_reward(self, data):
+        queries = data["queries"]
+        responses = data.get("responses", queries)  # 如果没有提供responses，使用queries
+        references = data.get("references", None)  # 可选的参考答案
+        
         if self.batch_size is None:
             batch_size = len(queries)
         else:
             batch_size = self.batch_size
             
-        # 处理pad token，与原代码保持一致
+        # 处理pad token
         for i in range(len(queries)):
-            queries[i] = (
-                strip_sequence(queries[i], self.pad_token, self.eos_token)
-                + self.eos_token
-            )
-        logger.info(f"queries[0]: {queries[0]}")
+            queries[i] = strip_sequence(queries[i], self.pad_token, self.eos_token) + self.eos_token
+            responses[i] = strip_sequence(responses[i], self.pad_token, self.eos_token) + self.eos_token
+            if references is not None:
+                references[i] = strip_sequence(references[i], self.pad_token, self.eos_token) + self.eos_token
+                
+        logger.info(f"Sample evaluation:\nQuery: {queries[0]}\nResponse: {responses[0]}\nReference: {references[0] if references else 'None'}")
         
         scores = []
         # 批量处理
         for i in range(0, len(queries), batch_size):
             batch_queries = queries[i:min(len(queries), i + batch_size)]
-            batch_scores = self._process_batch(batch_queries)
+            batch_responses = responses[i:min(len(responses), i + batch_size)]
+            batch_references = None
+            if references is not None:
+                batch_references = references[i:min(len(references), i + batch_size)]
+            batch_scores = self._process_batch(batch_queries, batch_responses, batch_references)
             scores.extend(batch_scores)
             
         return scores
     
-    def _process_batch(self, texts):
+    def _process_batch(self, queries, responses, references=None):
         batch_scores = []
-        for text in texts:
+        for i, (query, response) in enumerate(zip(queries, responses)):
+            reference = references[i] if references is not None else None
+            # 构建评估文本
+            eval_text = f"用户指令:\n{query}\n\n助手回复:\n{response}"
+            if reference is not None:
+                eval_text += f"\n\n参考答案:\n{reference}"
+            
             # 使用sglang评估
-            state = self._evaluate_text.run(text=text)
+            state = self._evaluate_text.run(text=eval_text)
             result = state.text()
             
             # 提取分数
@@ -99,11 +114,12 @@ def create_app(args):
     @app.post("/get_reward")
     async def get_reward(request: Request):
         data = await request.json()
-        queries = data.get("query")
-        rewards = reward_model.get_reward(queries)
-        result = {"rewards": rewards}
-        logger.info(f"Sent JSON: {result}")
-        return JSONResponse(result)
+        try:
+            scores = reward_model.get_reward(data)
+            return JSONResponse(content={"rewards": scores})
+        except Exception as e:
+            logger.error(f"Error processing request: {e}")
+            return JSONResponse(content={"error": str(e)}, status_code=500)
         
     return app
 
@@ -122,4 +138,5 @@ if __name__ == "__main__":
     args = parser.parse_args()
     
     app = create_app(args)
+    import uvicorn
     uvicorn.run(app, host=args.host, port=args.port)

@@ -8,6 +8,7 @@ import ray
 import torch
 import torch.nn as nn
 from tqdm import tqdm
+import json
 
 from openrlhf.models.actor import Actor
 from openrlhf.models.utils import compute_approx_kl, compute_reward, masked_mean, unpacking_samples
@@ -43,6 +44,7 @@ class Experience:
     advantages: (B, A)
     attention_mask: (B, S)
     action_mask: (B, A)
+    info: Optional[dict]
     kl: (B, A)
 
     "A" is the number of actions.
@@ -177,58 +179,38 @@ class NaiveExperienceMaker(ABC):
         Then, if we need certain processing for the rewards or do certain filtering, we can process the rollout as a whole.
         After that, we will calculate the advantages and returns for each experience.
         """
-        args = self.strategy.args
-        experiences = []
-        for samples in tqdm(
-            self.generate_samples(all_prompts, **generate_kwargs),
-            desc="make_experience",
-            disable=not self.strategy.is_rank_0(),
-        ):
-            experiences.append(self.make_experience(samples))
+        if isinstance(all_prompts, str):
+            all_prompts = [all_prompts]
 
-        experiences, rewards = self.process_experiences(experiences)
-
-        # calculate return and advantages
-        for experience, reward in zip(experiences, rewards):
-            num_actions = experience.info["num_actions"]
-            reward = compute_reward(
-                reward,
-                self.kl_ctl.value,
-                experience.kl,
-                action_mask=experience.action_mask,
-                num_actions=num_actions,
-                reward_clip_range=args.reward_clip_range,
-            )
-
-            if self.advantage_estimator == "gae":
-                experience.advantages, experience.returns = self.get_advantages_and_returns(
-                    experience.values,
-                    reward,
-                    experience.action_mask,
-                    generate_kwargs["gamma"],
-                    generate_kwargs["lambd"],
-                )
-            elif self.advantage_estimator in ["reinforce", "rloo"]:
-                experience.returns = self.get_cumulative_returns(
-                    reward,
-                    experience.action_mask,
-                    generate_kwargs["gamma"],
-                )
-                experience.advantages = deepcopy(experience.returns)
+        # 处理结构化输入
+        prompts = []
+        references = []
+        for item in all_prompts:
+            if isinstance(item, dict):
+                prompts.append(item.get("prompt", item.get("instruction", "")))
+                references.append(item.get("reference", ""))
             else:
-                raise Exception(f"Unkown advantage_estimator {self.advantage_estimator}")
+                prompts.append(item)
+                references.append("")
 
-            # calculate the return info.
-            if not getattr(self, "packing_samples", False):
-                return_sums = reward.sum(dim=-1)
-            else:
-                return_sums = torch.tensor(
-                    [each_reward.sum() for each_reward in reward], device=torch.cuda.current_device()
-                )
-            experience.info["return"] = return_sums
-            # remove unnecessary info
-            experience.kl = None
-            del experience.info["num_actions"]
+        # 生成回复并获取样本
+        samples = self.generate_samples(prompts, **generate_kwargs)
+        if not samples:
+            return []
+
+        # 生成经验
+        experience = self.make_experience(samples)
+        if experience is None:
+            return []
+
+        # 将参考答案添加到experience的info中
+        experience.info["references"] = references
+
+        # 处理经验（计算奖励等）
+        experiences, rewards = self.process_experiences([experience])
+        if not experiences:
+            return []
+
         return experiences
 
     @torch.no_grad()
@@ -291,8 +273,17 @@ class NaiveExperienceMaker(ABC):
         # rewards
         if self.remote_rm_url is not None:
             # remote RM
-            queries = self.tokenizer.batch_decode(sequences.cpu(), skip_special_tokens=False)
-            r = remote_rm_fn(self.remote_rm_url, queries=queries).to(device=action_log_probs.device)
+            # queries = self.tokenizer.batch_decode(sequences.cpu(), skip_special_tokens=False)
+            
+            # Split prompt and response
+            structured_queries = []
+            for seq, mask in zip(sequences.cpu(), action_mask.cpu()):
+                prompt_len = (mask == 0).sum().item()
+                prompt = self.tokenizer.decode(seq[:prompt_len], skip_special_tokens=True)
+                response = self.tokenizer.decode(seq[prompt_len:], skip_special_tokens=True)
+                structured_queries.append(json.dumps({"instruction": prompt, "response": response, "reference": ""})) # reference is empty for now
+            
+            r = remote_rm_fn(self.remote_rm_url, queries=structured_queries).to(device=action_log_probs.device)
         else:
             # local RM
             r = self.reward_model(sequences, attention_mask)
@@ -329,7 +320,7 @@ class NaiveExperienceMaker(ABC):
         )
 
     @torch.no_grad()
-    def process_experiences(self, experiences: List[Experience]) -> Tuple[List[Experience], List[torch.Tensor]]:
+    def process_experiences(self, experiences: List[Experience]):
         """
         Process experiences, this can be used to filter out some experiences or do some processing on the rewards.
 
@@ -337,17 +328,72 @@ class NaiveExperienceMaker(ABC):
         - experiences: List of Experience
         - rewards: List of rewards
         """
-        args = self.strategy.args
-        # reward shaping for RLOO
-        if args.advantage_estimator == "rloo":
-            rewards = torch.cat([experience.info["reward"] for experience in experiences])
-            rewards = rewards.reshape(-1, args.n_samples_per_prompt)
-            baseline = (rewards.sum(-1, keepdim=True) - rewards) / (args.n_samples_per_prompt - 1)
-            rewards = rewards - baseline
-            rewards = rewards.flatten().chunk(len(experiences))
-            return experiences, rewards
-        # default rewards
-        return experiences, [experience.info["reward"] for experience in experiences]
+        rewards_list = []
+        for experience in experiences:
+            # 获取序列和掩码
+            sequences = experience.sequences
+            attention_mask = experience.attention_mask
+            action_mask = experience.action_mask
+            info = experience.info
+
+            # 分离提示和响应
+            prompts = []
+            responses = []
+            references = info.get("references", [""] * len(sequences))
+
+            for i, (seq, mask) in enumerate(zip(sequences, action_mask)):
+                prompt_len = (~mask).sum()
+                prompt = seq[:prompt_len]
+                response = seq[prompt_len:]
+                prompts.append(self.tokenizer.decode(prompt, skip_special_tokens=True))
+                responses.append(self.tokenizer.decode(response, skip_special_tokens=True))
+
+            # 计算奖励
+            if self.remote_rm_url:
+                rewards = remote_rm_fn(
+                    self.remote_rm_url,
+                    prompts,
+                    responses,
+                    references,
+                )
+            else:
+                # 本地奖励模型计算
+                rewards = compute_reward(
+                    self.reward_model,
+                    sequences,
+                    attention_mask,
+                    action_mask,
+                    self.strategy.device,
+                )
+                if isinstance(rewards, list):
+                    if self.reward_fn:
+                        rewards = self.reward_fn(rewards)
+                    else:
+                        rewards = rewards[0]
+
+            rewards_list.append(rewards)
+
+            # 计算优势和回报
+            if self.advantage_estimator == "gae":
+                advantages, returns = self.get_advantages_and_returns(
+                    experience.values,
+                    rewards,
+                    action_mask,
+                    self.strategy.args.gamma,
+                    self.strategy.args.lambd,
+                )
+            else:
+                returns = self.get_cumulative_returns(
+                    rewards,
+                    action_mask,
+                    self.strategy.args.gamma,
+                )
+                advantages = returns
+
+            experience.advantages = advantages
+            experience.returns = returns
+
+        return experiences, rewards_list
 
     @torch.no_grad()
     def get_advantages_and_returns(
@@ -547,10 +593,18 @@ class RemoteExperienceMaker(NaiveExperienceMaker):
                 for length in packed_seq_lens:
                     sequences_list.append(tokens_list[offset : offset + length])
                     offset += length
-                querdaoies = self.tokenizer.batch_decode(sequences_list, skip_special_tokens=False)
+                queries = self.tokenizer.batch_decode(sequences_list, skip_special_tokens=False)
+
+            # Split prompt and response
+            structured_queries = []
+            for seq, mask in zip(sequences_cpu, action_mask.cpu()):
+                prompt_len = (mask == 0).sum().item()
+                prompt = self.tokenizer.decode(seq[:prompt_len], skip_special_tokens=True)
+                response = self.tokenizer.decode(seq[prompt_len:], skip_special_tokens=True)
+                structured_queries.append(json.dumps({"instruction": prompt, "response": response, "reference": ""})) # reference is empty for now
 
             for rm in self.remote_rm_url:
-                r = remote_rm_fn_ray.remote(rm, queries=queries)
+                r = remote_rm_fn_ray.remote(rm, queries=structured_queries)
                 r_refs.append(r)
 
         # log probs
@@ -704,24 +758,6 @@ class RemoteExperienceMaker(NaiveExperienceMaker):
                 sequences = sequences.to("cuda")
                 attention_mask = attention_mask.to("cuda")
                 action_mask = action_mask.to("cuda")
-                samples_list.append(
-                    Samples(
-                        sequences=sequences,
-                        attention_mask=attention_mask,
-                        action_mask=action_mask,
-                        num_actions=action_mask.size(1),
-                        packed_seq_lens=None,
-                        response_length=action_mask.float().sum(dim=-1),
-                        total_length=attention_mask.float().sum(dim=-1),
-                    )
-                )
-            else:
-                # NOTE: concat all outputs to following format:
-                #
-                # | token token token | token token [EOS] | token token token token token | token token [EOS] | token token | token token token [EOS] |
-                # |<---  prompt ----->|<---- answer ----->|<---------- prompt ----------->|<----- answer ---->|<- prompt -->|<-------- answer ------->|
-                pad_token_id, eos_token_id = self.tokenizer.pad_token_id, self.tokenizer.eos_token_id
-                sequences = []
                 packed_seq_lens = []
                 attention_mask = []
                 num_actions = []

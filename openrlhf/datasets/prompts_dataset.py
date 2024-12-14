@@ -2,7 +2,7 @@ from torch.utils.data import Dataset
 from tqdm import tqdm
 
 
-def preprocess_data(data, input_template=None, input_key="input", apply_chat_template=None) -> str:
+def preprocess_data(data, input_template=None, input_key="instruction", reference_key="reference", apply_chat_template=None) -> dict:
     if apply_chat_template:
         chat = data[input_key]
         if isinstance(chat, str):
@@ -12,7 +12,13 @@ def preprocess_data(data, input_template=None, input_key="input", apply_chat_tem
         prompt = data[input_key]
         if input_template:
             prompt = input_template.format(prompt)
-    return prompt
+    
+    # 返回结构化数据
+    return {
+        "instruction": data[input_key],
+        "reference": data.get(reference_key, ""),  # 参考答案可能不存在
+        "prompt": prompt  # 用于实际输入到模型的处理后文本
+    }
 
 
 class PromptDataset(Dataset):
@@ -22,7 +28,8 @@ class PromptDataset(Dataset):
     Args:
         dataset: dataset for PPO model
         tokenizer: tokenizer for PPO model
-        max_length: max length of input
+        strategy: training strategy
+        input_template: optional template for formatting input
     """
 
     def __init__(
@@ -38,7 +45,8 @@ class PromptDataset(Dataset):
 
         # chat_template
         self.input_template = input_template
-        input_key = getattr(self.strategy.args, "input_key", None)
+        input_key = getattr(self.strategy.args, "input_key", "instruction")
+        reference_key = getattr(self.strategy.args, "reference_key", "reference")
         apply_chat_template = getattr(self.strategy.args, "apply_chat_template", False)
 
         if apply_chat_template:
@@ -46,8 +54,8 @@ class PromptDataset(Dataset):
 
         self.prompts = []
         for data in tqdm(dataset, desc="Preprocessing data", disable=not self.strategy.is_rank_0()):
-            prompt = preprocess_data(data, input_template, input_key, apply_chat_template)
-            self.prompts.append(prompt)
+            processed = preprocess_data(data, input_template, input_key, reference_key, apply_chat_template)
+            self.prompts.append(processed)
 
     def __len__(self):
         length = len(self.prompts)
