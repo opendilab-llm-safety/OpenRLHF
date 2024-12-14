@@ -547,7 +547,7 @@ class RemoteExperienceMaker(NaiveExperienceMaker):
                 for length in packed_seq_lens:
                     sequences_list.append(tokens_list[offset : offset + length])
                     offset += length
-                queries = self.tokenizer.batch_decode(sequences_list, skip_special_tokens=False)
+                querdaoies = self.tokenizer.batch_decode(sequences_list, skip_special_tokens=False)
 
             for rm in self.remote_rm_url:
                 r = remote_rm_fn_ray.remote(rm, queries=queries)

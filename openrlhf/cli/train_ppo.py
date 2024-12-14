@@ -248,8 +248,7 @@ def train(args):
         gamma=args.gamma,
         lambd=args.lambd,
         init_kl_coef=args.init_kl_coef,
-        kl_target=args.kl_target,
-        ema_beta=0.992,
+        kl_target=args.kl_taema_model
         ptx_coef=args.ptx_coef,
         max_norm=args.max_norm,
         # fro GPT generation
