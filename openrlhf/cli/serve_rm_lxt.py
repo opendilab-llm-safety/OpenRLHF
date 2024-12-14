@@ -72,9 +72,10 @@ class RewardModelProxy:
         for i, (query, response) in enumerate(zip(queries, responses)):
             reference = references[i] if references is not None else None
             # 构建评估文本
-            eval_text = f"用户指令:\n{query}\n\n助手回复:\n{response}"
+            eval_text = f"==========\n**用户指令**:\n\n{query}"
             if reference is not None:
-                eval_text += f"\n\n参考答案:\n{reference}"
+                eval_text += f"\n\n==========\n**参考答案**:\n\n{reference}"
+            eval_text += f"\n\n==========\n**助手回复**:\n\n{response}"
             
             # 使用sglang评估
             state = self._evaluate_text.run(text=eval_text)
@@ -90,13 +91,13 @@ class RewardModelProxy:
     @sgl.function
     def _evaluate_text(s, text: str):
         s += sgl.system("""你是一个专业的答案评估专家，你非常擅长评价assistant是否遵循了user的指令并做出了正确的回复。
-你将会收到一个user和assistant的对话，请根据以下维度评估assistant的回答是否遵循了user的指令并做出了正确的回复，最后给出简要分析和你的打分:
+你将会收到一个user和assistant的对话，包括用户指令、参考答案和assistant的回答。请根据以下维度评估assistant的回答是否遵循了user的指令并做出了正确的回复，最后给出简要分析和你的打分:
 1. 回答的准确性和相关性
 2. 回答的完整性
 3. 最终答案的格式正确性
 4. 语言表达的清晰度
 
-你的输出格式应当符合下列的正则表达式：
+你的输出格式应当严格符合下列的正则表达式：
 {SCORE_REGEX}
 
 其中0.00-1.00之间的分数表示你认为assistant的回答是否遵循了user的指令并做出了正确的回复，0.00表示完全不遵循且答案错误，1.00表示完全遵循且答案正确。

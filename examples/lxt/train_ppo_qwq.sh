@@ -1,12 +1,14 @@
 #!/bin/bash
 
-#SBATCH -p your-partition
+#SBATCH -p mllm-align
 #SBATCH -N 4                       # 使用4个节点
 #SBATCH --ntasks-per-node=1        
-#SBATCH --gpus-per-node=8         # 每个节点8张GPU
-#SBATCH --mem=0                    
+#SBATCH --gpus-per-node=8         # 每个节点8张GP            
 #SBATCH -t 7-00:00:00             # 运行7天
 #SBATCH --job-name=ppo_38b
+#SBATCH --comment="auto"          # auto模式
+#SBATCH -o output.%j.log    # 标准输出文件
+#SBATCH -e error.%j.log     # 错误输出文件
 
 # 环境设置
 export MASTER_PORT=29500
@@ -31,6 +33,13 @@ for ((i = 1; i < SLURM_JOB_NUM_NODES; i++)); do
     sleep 5
 done
 
+# 检查是否有checkpoint
+CHECKPOINT_DIR="/mnt/hwfile/llm-safety/checkpoints/InternVL2_5-QwQ-38B-v5-PPO-MetaMathQA"
+LATEST_CHECKPOINT=""
+if [ -d "$CHECKPOINT_DIR" ]; then
+    LATEST_CHECKPOINT=$(find "$CHECKPOINT_DIR" -name "checkpoint_*" -type d | sort -V | tail -n 1)
+fi
+
 # PPO训练命令
 srun --overlap --nodes=1 --ntasks=1 -w "$node_1" \
 python -m openrlhf.cli.train_ppo_ray \
@@ -54,8 +63,8 @@ python -m openrlhf.cli.train_ppo_ray \
     --micro_rollout_batch_size 8 \
     --rollout_batch_size 512 \
     --max_epochs 1 \
-    --prompt_max_len 1024 \
-    --generate_max_len 1024 \
+    --prompt_max_len 32768 \
+    --generate_max_len 8192 \
     --zero_stage 3 \
     --bf16 \
     --actor_learning_rate 5e-7 \
@@ -77,4 +86,5 @@ python -m openrlhf.cli.train_ppo_ray \
     --reward_clip_range 5 \
     --wandb_project "ppo-training" \
     --wandb_run_name "InternVL2_5-QwQ-38B-v5-ppo" \
-    --use_wandb true
+    --use_wandb true \
+    ${LATEST_CHECKPOINT:+--load_checkpoint "$LATEST_CHECKPOINT"} # 如果有checkpoint则加载
