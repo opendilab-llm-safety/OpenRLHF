@@ -3,7 +3,7 @@
 #SBATCH -p mllm-align
 #SBATCH -N 4                       # 使用4个节点
 #SBATCH --ntasks-per-node=1        
-#SBATCH --gpus-per-node=8         # 每个节点8张GP            
+#SBATCH --gres=gpu:8         # 每个节点8张GP            
 #SBATCH -t 7-00:00:00             # 运行7天
 #SBATCH --job-name=ppo_38b
 #SBATCH --comment="auto"          # auto模式

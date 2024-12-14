@@ -3,7 +3,7 @@
 #SBATCH -p mllm-align
 #SBATCH -N 1                       # 使用1个节点
 #SBATCH --ntasks-per-node=1        
-#SBATCH --gpus-per-node=1         # 奖励模型只需要1个GPU                
+#SBATCH --gres=gpu:1         # 奖励模型只需要1个GPU                
 #SBATCH -t 7-00:00:00             # 运行7天
 #SBATCH --job-name=serve_rm
 #SBATCH --comment="auto"          # auto模式
