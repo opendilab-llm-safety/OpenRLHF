@@ -1,12 +1,13 @@
 #!/bin/bash
 
 #SBATCH -p mllm-align
-#SBATCH -N 3                       # 使用3个节点
+#SBATCH -N 1                       # 使用1个节点
 #SBATCH --ntasks-per-node=1        
-#SBATCH --gres=gpu:8         # 每个节点8张GP            
-#SBATCH -t 7-00:00:00             # 运行7天
+#SBATCH --gres=gpu:8         # 每个节点8张GP
+#SBATCH --mem=0                 # 全部内存
+#SBATCH -t 3-00:00:00             # 运行3天
 #SBATCH --job-name=ppo_38b
-#SBATCH --comment="auto"          # auto模式
+#SBATCH --quotatype=auto          # auto模式
 #SBATCH -o output.%j.log    # 标准输出文件
 #SBATCH -e error.%j.log     # 错误输出文件
 
@@ -49,25 +50,26 @@ fi
 # PPO训练命令
 srun --overlap --nodes=1 --ntasks=1 -w "$node_1" \
 python -m openrlhf.cli.train_ppo_ray \
-    --ref_num_nodes 1 \
-    --ref_num_gpus_per_node 8 \
     --critic_num_nodes 1 \
-    --critic_num_gpus_per_node 8 \
+    --critic_num_gpus_per_node 4 \
     --actor_num_nodes 1 \
-    --actor_num_gpus_per_node 8 \
-    --vllm_num_engines 3 \
-    --vllm_tensor_parallel_size 8 \
+    --actor_num_gpus_per_node 4 \
+    --vllm_num_engines 1 \
+    --vllm_tensor_parallel_size 4 \
+    --lora_rank 8 \
+    --lora_alpha 16 \
+    --target_modules "q_proj,k_proj,v_proj,o_proj" \
     --colocate_actor_ref \
     --pretrain /mnt/hwfile/llm-safety/models/InternVL2_5-QwQ-38B-v5 \
-    --remote_rm_url http://10.140.0.151:10100/get_reward \
+    --remote_rm_url http://10.140.1.129:10100/get_reward \
     --save_path /mnt/hwfile/llm-safety/checkpoints/InternVL2_5-QwQ-38B-v5-PPO-MetaMathQA \
     --input_key "query" \
     --reference_key "response" \
     --apply_chat_template \
-    --micro_train_batch_size 4 \
-    --train_batch_size 128 \
-    --micro_rollout_batch_size 8 \
-    --rollout_batch_size 512 \
+    --micro_train_batch_size 2 \
+    --train_batch_size 64 \
+    --micro_rollout_batch_size 4 \
+    --rollout_batch_size 256 \
     --max_epochs 1 \
     --prompt_max_len 32768 \
     --generate_max_len 8192 \

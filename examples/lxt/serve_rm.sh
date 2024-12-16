@@ -6,13 +6,13 @@
 #SBATCH --gres=gpu:1         # 奖励模型只需要1个GPU                
 #SBATCH -t 7-00:00:00             # 运行7天
 #SBATCH --job-name=serve_rm
-#SBATCH --comment="auto"          # auto模式
+#SBATCH --quotatype=auto          # auto模式
 #SBATCH -o output.%j.log    # 标准输出文件
 #SBATCH -e error.%j.log     # 错误输出文件
 
 
 # 启动模型部署
-python -m sglang.launch_server --model-path /mnt/hwfile/llm-safety/models/huggingface/Qwen/Qwen2.5-14B-Instruct-AWQ --host 0.0.0.0 --port 10095
+python -m sglang.launch_server --model-path /mnt/hwfile/llm-safety/models/huggingface/Qwen/Qwen2.5-72B-Instruct-AWQ --host 0.0.0.0 --port 10095
 
 # 启动奖励模型服务
 python -m openrlhf.cli.serve_rm_lxt \
