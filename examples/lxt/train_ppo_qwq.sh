@@ -1,7 +1,7 @@
 #!/bin/bash
 
 #SBATCH -p mllm-align
-#SBATCH -N 4                       # 使用4个节点
+#SBATCH -N 3                       # 使用3个节点
 #SBATCH --ntasks-per-node=1        
 #SBATCH --gres=gpu:8         # 每个节点8张GP            
 #SBATCH -t 7-00:00:00             # 运行7天
@@ -22,8 +22,13 @@ ip_head=$node_1:6379
 
 # 启动Ray head节点
 srun --nodes=1 --ntasks=1 -w "$node_1" \
-    ray start --head --node-ip-address=$node_1 --port=6379 --block &
-sleep 10
+    ray start --head \
+    --node-ip-address=$node_1 \
+    --port=6379 \
+    --dashboard-port=8265 \
+    --dashboard-agent-grpc-port=15408 \
+    --block &
+sleep 30
 
 # 启动Ray worker节点
 for ((i = 1; i < SLURM_JOB_NUM_NODES; i++)); do
@@ -40,6 +45,7 @@ if [ -d "$CHECKPOINT_DIR" ]; then
     LATEST_CHECKPOINT=$(find "$CHECKPOINT_DIR" -name "checkpoint_*" -type d | sort -V | tail -n 1)
 fi
 
+
 # PPO训练命令
 srun --overlap --nodes=1 --ntasks=1 -w "$node_1" \
 python -m openrlhf.cli.train_ppo_ray \
@@ -49,11 +55,11 @@ python -m openrlhf.cli.train_ppo_ray \
     --critic_num_gpus_per_node 8 \
     --actor_num_nodes 1 \
     --actor_num_gpus_per_node 8 \
-    --vllm_num_engines 8 \
-    --vllm_tensor_parallel_size 4 \
+    --vllm_num_engines 3 \
+    --vllm_tensor_parallel_size 8 \
     --colocate_actor_ref \
     --pretrain /mnt/hwfile/llm-safety/models/InternVL2_5-QwQ-38B-v5 \
-    --remote_rm_url http://10.1.96.87:30000/get_reward \
+    --remote_rm_url http://10.140.0.151:10100/get_reward \
     --save_path /mnt/hwfile/llm-safety/checkpoints/InternVL2_5-QwQ-38B-v5-PPO-MetaMathQA \
     --input_key "query" \
     --reference_key "response" \
@@ -88,3 +94,7 @@ python -m openrlhf.cli.train_ppo_ray \
     --wandb_run_name "InternVL2_5-QwQ-38B-v5-ppo" \
     --use_wandb true \
     ${LATEST_CHECKPOINT:+--load_checkpoint "$LATEST_CHECKPOINT"} # 如果有checkpoint则加载
+
+
+# set -x  # 打印执行的命令
+# exec 2>&1  # 将stderr重定向到stdout

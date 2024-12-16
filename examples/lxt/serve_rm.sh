@@ -10,16 +10,10 @@
 #SBATCH -o output.%j.log    # 标准输出文件
 #SBATCH -e error.%j.log     # 错误输出文件
 
-# 环境设置
-# export CUDA_VISIBLE_DEVICES=0
 
-# 激活 sglang 环境
-conda activate sglang
 # 启动模型部署
 python -m sglang.launch_server --model-path /mnt/hwfile/llm-safety/models/huggingface/Qwen/Qwen2.5-14B-Instruct-AWQ --host 0.0.0.0 --port 10095
 
-# 激活 rlhf 环境
-conda activate rlhf
 # 启动奖励模型服务
 python -m openrlhf.cli.serve_rm_lxt \
     --host 0.0.0.0 \
