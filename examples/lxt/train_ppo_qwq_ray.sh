@@ -65,7 +65,6 @@ JOB_ID=$(ray job submit \
     --load_in_4bit \
     --lora_rank 8 \
     --lora_alpha 16 \
-    --target_modules q_proj,k_proj,v_proj,o_proj \
     --colocate_actor_ref \
     --pretrain /mnt/hwfile/llm-safety/models/InternVL2_5-QwQ-38B-v5 \
     --remote_rm_url "${RM_SERVICE_URL}" \
