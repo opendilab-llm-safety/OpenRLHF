@@ -2,14 +2,15 @@
 
 #SBATCH -p mllm-align
 #SBATCH -N 1                       # 使用1个节点
-#SBATCH --ntasks-per-node=1        
+#SBATCH --ntasks-per-node=1
+#SBATCH --cpus-per-task=48           # 每个任务48个CPU核心
 #SBATCH --gres=gpu:4               # 每个节点4张GPU
 #SBATCH --mem=0                    # 全部内存
 #SBATCH -t 3-00:00:00              # 运行3天
 #SBATCH --job-name=ppo_38b
 #SBATCH --quotatype=auto           # auto模式
 #SBATCH --mail-type=FAIL           # only send email on failure
-#SBATCH --overcommit               # needed for pytorch
+#SBATCH --exclusive                # 独占节点
 
 # 项目设置
 OPENRLHF_PATH='/mnt/petrelfs/lixiangtian/workspace/OpenRLHF'
@@ -37,12 +38,17 @@ ip_head=$ip:$port
 export ip_head
 echo "IP Head: $ip_head"  &>> ${JOBLOG}
 
+# 激活 Conda 环境
+CONDA_ENV_PATH="/path/to/your/conda/envs/rlhf" # 请修改为你的Conda环境路径
+source $CONDA_ENV_PATH/bin/activate
+
+# 添加项目路径到 PYTHONPATH
+export PYTHONPATH=$OPENRLHF_PATH:$PYTHONPATH
+
 echo "STARTING HEAD at $node_1"  &>> ${JOBLOG}
 srun --nodes=1 --ntasks=1 -w "$node_1" bash -c \
     "cd $OPENRLHF_PATH \
-    && pip install ray[default]==$RAY_VERSION \
-    && pip install openrlhf[vllm] \
-    && /root/.local/bin/ray start --head --node-ip-address=$ip --port=$port --dashboard-port=20065 --dashboard-agent-grpc-port=20066 --block" &>> ${JOBLOG} &
+    && ray start --head --node-ip-address=$ip --port=$port --dashboard-port=20065 --dashboard-agent-grpc-port=20066 --block" &>> ${JOBLOG} &
 sleep 30s
 
 worker_num=$((SLURM_JOB_NUM_NODES - 1)) #number of nodes other than the head node
@@ -51,9 +57,7 @@ for ((i = 1; i <= worker_num; i++)); do
     echo "STARTING WORKER $i at $node_i"  &>> ${JOBLOG}
     srun --nodes=1 --ntasks=1 -w "$node_i" bash -c \
         "cd $OPENRLHF_PATH \
-        && pip install ray[default]==$RAY_VERSION \
-        && pip install openrlhf[vllm] \
-        && /root/.local/bin/ray start --address "$ip_head" --block" &>> ${JOBLOG} &
+        && ray start --address "$ip_head" --block" &>> ${JOBLOG} &
     sleep 5s
 done
 
@@ -61,19 +65,14 @@ sleep 30s
 
 # 检查是否有checkpoint
 CHECKPOINT_DIR="/mnt/hwfile/llm-safety/checkpoints/InternVL2_5-QwQ-38B-v5-PPO-MetaMathQA"
-LATEST_CHECKPOINT=""
-if [ -d "$CHECKPOINT_DIR" ]; then
-    LATEST_CHECKPOINT=$(find "$CHECKPOINT_DIR" -name "checkpoint_*" -type d | sort -V | tail -n 1)
-fi
+CHECKPOINT_FILE="pytorch_model.bin" # 指定需要加载的权重文件
 
 echo "Using Reward Model Service: $RM_SERVICE_URL" &>> ${JOBLOG}
 # PPO训练命令
 srun --overlap --nodes=1 --ntasks=1 -w "$node_1" bash -c \
     "cd $OPENRLHF_PATH \
-    && pip install ray[default]==$RAY_VERSION \
-    && pip install openrlhf[vllm] \
-    && /root/.local/bin/ray job submit --address=http://localhost:20065 \
-        --runtime-env-json='{\"working_dir\": \".\", \"pip\": \"requirements.txt\"}' \
+    && ray job submit --address=http://localhost:20065 \
+        --runtime-env-json='{\"working_dir\": \".\"}' \
         -- python -m openrlhf.cli.train_ppo_ray \
         --ref_num_nodes 1 \
         --ref_num_gpus_per_node 2 \
@@ -123,7 +122,7 @@ srun --overlap --nodes=1 --ntasks=1 -w "$node_1" bash -c \
         --wandb_project ppo-training \
         --wandb_run_name InternVL2_5-QwQ-38B-v5-ppo \
         --use_wandb wandb_token \
-        ${LATEST_CHECKPOINT:+--load_checkpoint "$LATEST_CHECKPOINT"}" &>> ${JOBLOG} # 如果有checkpoint则加载
+        ${CHECKPOINT_FILE:+--load_checkpoint "$CHECKPOINT_DIR/$CHECKPOINT_FILE"}" &>> ${JOBLOG} # 如果有checkpoint则加载
 
 
 
