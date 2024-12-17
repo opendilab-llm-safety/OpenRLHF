@@ -144,7 +144,7 @@ log_info "Changed to directory: $(pwd)"
 log_info "Submitting training job..."
 ray job submit --address="http://127.0.0.1:20065" \
     --runtime-env-json='{"working_dir": "."}' \
-    -- python -m openrlhf.cli.train_ppo_ray \
+    -- python -u -m openrlhf.cli.train_ppo_ray \
     --ref_num_nodes 1 \
     --ref_num_gpus_per_node 2 \
     --critic_num_nodes 1 \
