@@ -1,15 +1,23 @@
 #!/bin/bash
 
 #SBATCH -p mllm-align
-#SBATCH -N 1                       # 使用1个节点
-#SBATCH --ntasks-per-node=1        
-#SBATCH --gres=gpu:8         # 每个节点8张GP
+#SBATCH -N 2                       # 使用1个节点
+#SBATCH --ntasks-per-node=4        
+#SBATCH --gres=gpu:4         # 每个节点8张GP
 #SBATCH --mem=0                 # 全部内存
 #SBATCH -t 3-00:00:00             # 运行3天
 #SBATCH --job-name=ppo_38b
 #SBATCH --quotatype=auto          # auto模式
 #SBATCH -o output.%j.log    # 标准输出文件
 #SBATCH -e error.%j.log     # 错误输出文件
+
+# 读取奖励模型服务信息
+STATUS_FILE="rm_service_status.txt"
+if [ ! -f "$STATUS_FILE" ]; then
+    echo "Error: Reward model service information not found. Please start the reward model service first."
+    exit 1
+fi
+source $STATUS_FILE
 
 # 环境设置
 export MASTER_PORT=29500
@@ -46,7 +54,7 @@ if [ -d "$CHECKPOINT_DIR" ]; then
     LATEST_CHECKPOINT=$(find "$CHECKPOINT_DIR" -name "checkpoint_*" -type d | sort -V | tail -n 1)
 fi
 
-
+echo "Using Reward Model Service: $RM_SERVICE_URL"
 # PPO训练命令
 srun --overlap --nodes=1 --ntasks=1 -w "$node_1" \
 python -m openrlhf.cli.train_ppo_ray \
@@ -61,7 +69,7 @@ python -m openrlhf.cli.train_ppo_ray \
     --target_modules "q_proj,k_proj,v_proj,o_proj" \
     --colocate_actor_ref \
     --pretrain /mnt/hwfile/llm-safety/models/InternVL2_5-QwQ-38B-v5 \
-    --remote_rm_url http://10.140.1.129:10100/get_reward \
+    --remote_rm_url "$RM_SERVICE_URL" \
     --save_path /mnt/hwfile/llm-safety/checkpoints/InternVL2_5-QwQ-38B-v5-PPO-MetaMathQA \
     --input_key "query" \
     --reference_key "response" \
@@ -91,7 +99,6 @@ python -m openrlhf.cli.train_ppo_ray \
     --lambd 0.95 \
     --n_samples_per_prompt 1 \
     --advantage_estimator gae \
-    --reward_clip_range 5 \
     --wandb_project "ppo-training" \
     --wandb_run_name "InternVL2_5-QwQ-38B-v5-ppo" \
     --use_wandb true \
