@@ -37,6 +37,13 @@ check_service() {
     return 1
 }
 
+# 激活conda环境
+source /mnt/petrelfs/lixiangtian/miniconda3/etc/profile.d/conda.sh
+conda activate sglang || {
+    echo "Failed to activate conda environment 'rlhf'" >&2
+    exit 1
+}
+
 # 启动基础模型服务
 echo "Starting base model service on ${NODE_IP}:${RM_MODEL_PORT}..."
 python -m sglang.launch_server \

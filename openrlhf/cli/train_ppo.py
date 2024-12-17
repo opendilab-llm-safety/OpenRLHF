@@ -248,7 +248,7 @@ def train(args):
         gamma=args.gamma,
         lambd=args.lambd,
         init_kl_coef=args.init_kl_coef,
-        kl_target=args.kl_taema_model
+        kl_target=args.kl_taema_model,
         ptx_coef=args.ptx_coef,
         max_norm=args.max_norm,
         # fro GPT generation
@@ -393,6 +393,8 @@ if __name__ == "__main__":
     )
     parser.add_argument("--pretrain_split", type=str, default="train")
     parser.add_argument("--input_key", type=str, default="input", help="JSON dataset key")
+    # 添加 reference_key 参数
+    parser.add_argument("--reference_key", type=str, default="output", help="JSON dataset key") 
     parser.add_argument("--input_template", type=str, default=None)
     parser.add_argument(
         "--apply_chat_template", action="store_true", default=False, help="Use HF tokenizer chat template"

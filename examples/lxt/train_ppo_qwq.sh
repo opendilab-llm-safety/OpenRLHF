@@ -3,18 +3,25 @@
 #SBATCH -p mllm-align
 #SBATCH -N 1                       # 使用1个节点
 #SBATCH --ntasks-per-node=1
-#SBATCH --cpus-per-task=48           # 每个任务48个CPU核心
 #SBATCH --gres=gpu:4               # 每个节点4张GPU
 #SBATCH --mem=0                    # 全部内存
 #SBATCH -t 3-00:00:00              # 运行3天
 #SBATCH --job-name=ppo_38b
 #SBATCH --quotatype=auto           # auto模式
 #SBATCH --mail-type=FAIL           # only send email on failure
-#SBATCH --exclusive                # 独占节点
+#SBATCH -o train_ppo_logs/output.%j.log    
+#SBATCH -e train_ppo_logs/error.%j.log   
 
 # 项目设置
 OPENRLHF_PATH='/mnt/petrelfs/lixiangtian/workspace/OpenRLHF'
 RAY_VERSION=2.12.0
+
+# 激活conda环境
+source /mnt/petrelfs/lixiangtian/miniconda3/etc/profile.d/conda.sh
+conda activate rlhf || {
+    echo "Failed to activate conda environment 'rlhf'" >&2
+    exit 1
+}
 
 JOBLOG="$(realpath .)/train_ppo_logs/train_ppo_qwq-$SLURM_JOB_ID.log"
 echo "$(date '+%Y-%m-%d %H:%M:%S') Job ${SLURM_JOB_ID} started ..." &>> ${JOBLOG}
@@ -38,9 +45,6 @@ ip_head=$ip:$port
 export ip_head
 echo "IP Head: $ip_head"  &>> ${JOBLOG}
 
-# 激活 Conda 环境
-CONDA_ENV_PATH="/mnt/petrelfs/lixiangtian/miniconda3/envs/rlhf" 
-source $CONDA_ENV_PATH/bin/activate
 
 # 添加项目路径到 PYTHONPATH
 export PYTHONPATH=$OPENRLHF_PATH:$PYTHONPATH
