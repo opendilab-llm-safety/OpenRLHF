@@ -15,7 +15,7 @@
 OPENRLHF_PATH='/mnt/petrelfs/lixiangtian/workspace/OpenRLHF'
 RAY_VERSION=2.12.0
 
-JOBLOG="$(realpath .)/train_ppo_qwq-$SLURM_JOB_ID.log"
+JOBLOG="$(realpath .)/train_ppo_logs/train_ppo_qwq-$SLURM_JOB_ID.log"
 echo "$(date '+%Y-%m-%d %H:%M:%S') Job ${SLURM_JOB_ID} started ..." &>> ${JOBLOG}
 
 # 读取奖励模型服务信息
@@ -40,7 +40,6 @@ echo "IP Head: $ip_head"  &>> ${JOBLOG}
 echo "STARTING HEAD at $node_1"  &>> ${JOBLOG}
 srun --nodes=1 --ntasks=1 -w "$node_1" bash -c \
     "cd $OPENRLHF_PATH \
-    && source env.sh \
     && pip install ray[default]==$RAY_VERSION \
     && pip install openrlhf[vllm] \
     && /root/.local/bin/ray start --head --node-ip-address=$ip --port=$port --dashboard-port=20065 --dashboard-agent-grpc-port=20066 --block" &>> ${JOBLOG} &
@@ -52,7 +51,6 @@ for ((i = 1; i <= worker_num; i++)); do
     echo "STARTING WORKER $i at $node_i"  &>> ${JOBLOG}
     srun --nodes=1 --ntasks=1 -w "$node_i" bash -c \
         "cd $OPENRLHF_PATH \
-        && source env.sh \
         && pip install ray[default]==$RAY_VERSION \
         && pip install openrlhf[vllm] \
         && /root/.local/bin/ray start --address "$ip_head" --block" &>> ${JOBLOG} &
@@ -72,7 +70,6 @@ echo "Using Reward Model Service: $RM_SERVICE_URL" &>> ${JOBLOG}
 # PPO训练命令
 srun --overlap --nodes=1 --ntasks=1 -w "$node_1" bash -c \
     "cd $OPENRLHF_PATH \
-    && source env.sh \
     && pip install ray[default]==$RAY_VERSION \
     && pip install openrlhf[vllm] \
     && /root/.local/bin/ray job submit --address=http://localhost:20065 \
