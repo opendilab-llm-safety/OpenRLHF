@@ -4,6 +4,13 @@
 OPENRLHF_PATH='/mnt/petrelfs/lixiangtian/workspace/OpenRLHF'
 RAY_VERSION=2.12.0
 
+# 激活conda环境
+source /mnt/petrelfs/lixiangtian/miniconda3/etc/profile.d/conda.sh
+conda activate rlhf || {
+    echo "Failed to activate conda environment 'rlhf'" >&2
+    exit 1
+}
+
 # 创建日志目录
 mkdir -p train_ppo_logs
 TIMESTAMP=$(date '+%Y%m%d_%H%M%S')
