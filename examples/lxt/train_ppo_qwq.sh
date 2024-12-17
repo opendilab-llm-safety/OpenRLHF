@@ -1,23 +1,21 @@
 #!/bin/bash
 
 #SBATCH -p mllm-align
-#SBATCH -N 2                       # 使用2个节点
+#SBATCH -N 1                       # 使用1个节点
 #SBATCH --ntasks-per-node=1        
 #SBATCH --gres=gpu:4               # 每个节点4张GPU
 #SBATCH --mem=0                    # 全部内存
 #SBATCH -t 3-00:00:00              # 运行3天
 #SBATCH --job-name=ppo_38b
 #SBATCH --quotatype=auto           # auto模式
-#SBATCH -o output.%j.log            # 标准输出文件
-#SBATCH -e error.%j.log             # 错误输出文件
 #SBATCH --mail-type=FAIL           # only send email on failure
 #SBATCH --overcommit               # needed for pytorch
 
 # 项目设置
-OPENRLHF_PATH=<OPENRLHF_ROOT_PATH>
+OPENRLHF_PATH='/mnt/petrelfs/lixiangtian/workspace/OpenRLHF'
 MOUNT="$OPENRLHF_PATH:/openrlhf,$HOME/.cache:/root/.cache"
-IMAGE_NAME="msr-aigc-sh/openrlhf_dev:5.0"
-RAY_VERSION=2.9.3
+IMAGE_NAME="nvcr.io/nvidia/pytorch:24.07-py3"
+RAY_VERSION=2.12.0
 
 JOBLOG="$(realpath .)/train_ppo_qwq-$SLURM_JOB_ID.log"
 echo "$(date '+%Y-%m-%d %H:%M:%S') Job ${SLURM_JOB_ID} started ..." &>> ${JOBLOG}
@@ -32,8 +30,8 @@ fi
 source $STATUS_FILE
 
 # 环境设置
-export MASTER_PORT=29610
-export MASTER_ADDR=$(scontrol show hostnames $SLURM_JOB_NODELIST | head -n 1)
+# export MASTER_PORT=29610
+# export MASTER_ADDR=$(scontrol show hostnames $SLURM_JOB_NODELIST | head -n 1)
 
 # Ray集群设置
 nodes=$(scontrol show hostnames "$SLURM_JOB_NODELIST")
@@ -85,13 +83,14 @@ srun --overlap --nodes=1 --ntasks=1 -w "$node_1" --container-image="$IMAGE_NAME"
         --runtime-env-json='{\"working_dir\": \"/openrlhf\", \"pip\": \"/openrlhf/requirements.txt\"}' \
         -- python -m openrlhf.cli.train_ppo_ray \
         --ref_num_nodes 1 \
-        --ref_num_gpus_per_node 4 \
+        --ref_num_gpus_per_node 2 \
         --critic_num_nodes 1 \
-        --critic_num_gpus_per_node 4 \
+        --critic_num_gpus_per_node 2 \
         --actor_num_nodes 1 \
-        --actor_num_gpus_per_node 4 \
+        --actor_num_gpus_per_node 2 \
         --vllm_num_engines 1 \
-        --vllm_tensor_parallel_size 4 \
+        --vllm_tensor_parallel_size 2 \
+        --load_in_4bit \
         --lora_rank 8 \
         --lora_alpha 16 \
         --target_modules q_proj,k_proj,v_proj,o_proj \
@@ -120,6 +119,7 @@ srun --overlap --nodes=1 --ntasks=1 -w "$node_1" --container-image="$IMAGE_NAME"
         --flash_attn \
         --gradient_checkpointing \
         --packing_samples \
+        --vllm_sync_backend nccl \
         --max_norm 1.0 \
         --eps_clip 0.2 \
         --value_clip 0.2 \
@@ -129,7 +129,7 @@ srun --overlap --nodes=1 --ntasks=1 -w "$node_1" --container-image="$IMAGE_NAME"
         --advantage_estimator gae \
         --wandb_project ppo-training \
         --wandb_run_name InternVL2_5-QwQ-38B-v5-ppo \
-        --use_wandb true \
+        --use_wandb wandb_token \
         ${LATEST_CHECKPOINT:+--load_checkpoint "$LATEST_CHECKPOINT"}" &>> ${JOBLOG} # 如果有checkpoint则加载
 
 
