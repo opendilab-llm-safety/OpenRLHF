@@ -128,21 +128,68 @@ log_info "=== Ray Cluster Status ==="
 ray status &>> ${JOBLOG}
 log_info "=========================="
 
-# 检查GPU可见性
-log_info "Checking GPU visibility for Ray..."
-python -c "import ray; ray.init(); print(ray.get_gpu_ids())" &>> ${JOBLOG}
+# 检查GPU可见性和资源分配
+log_info "Checking GPU visibility and resources for Ray..."
+python -c "
+import ray
+ray.init()
+print('Available GPUs:', ray.get_gpu_ids())
+resources = ray.cluster_resources()
+print('Cluster resources:', resources)
+assert resources.get('GPU', 0) >= 8, 'Not enough GPUs available'
+" &>> ${JOBLOG}
+
+# 详细检查Ray集群状态
+log_info "Performing detailed Ray cluster status check..."
+python -c "
+import ray
+import time
+import sys
+
+def check_ray_status():
+    try:
+        if not ray.is_initialized():
+            ray.init()
+        
+        status = ray.nodes()
+        alive_nodes = [node for node in status if node['alive']]
+        if not alive_nodes:
+            return False, 'No alive nodes found'
+            
+        resources = ray.cluster_resources()
+        if resources.get('GPU', 0) < 8:
+            return False, f'Insufficient GPUs: {resources.get("GPU", 0)}/8'
+            
+        return True, 'Ray cluster is healthy'
+    except Exception as e:
+        return False, str(e)
+
+MAX_RETRIES = 10
+for i in range(MAX_RETRIES):
+    ok, msg = check_ray_status()
+    print(f'Check {i+1}/{MAX_RETRIES}: {msg}')
+    if ok:
+        sys.exit(0)
+    time.sleep(10)
+sys.exit(1)
+" &>> ${JOBLOG}
+
+if [ $? -ne 0 ]; then
+    log_error "Ray cluster health check failed"
+    exit 1
+fi
 
 # 等待确保服务完全就绪
 log_info "Waiting additional time for all services to stabilize..."
-sleep 30
+sleep 60
 
 log_info "Preparing to submit training job..."
 cd $OPENRLHF_PATH
 log_info "Changed to directory: $(pwd)"
 
-# PPO训练命令
-log_info "Submitting training job..."
-ray job submit --address="http://127.0.0.1:20065" \
+# 提交并监控PPO训练任务
+log_info "Submitting and monitoring training job..."
+JOB_ID=$(ray job submit --address="http://127.0.0.1:20065" \
     --runtime-env-json='{"working_dir": "."}' \
     -- python -u -m openrlhf.cli.train_ppo_ray \
     --ref_num_nodes 1 \
@@ -193,9 +240,46 @@ ray job submit --address="http://127.0.0.1:20065" \
     --wandb_project ppo-training \
     --wandb_run_name InternVL2_5-QwQ-38B-v5-ppo \
     --use_wandb $WANDB_API_KEY \
-    ${CHECKPOINT_FILE:+--load_checkpoint "$CHECKPOINT_DIR/$CHECKPOINT_FILE"} &>> ${JOBLOG}
+    ${CHECKPOINT_FILE:+--load_checkpoint "$CHECKPOINT_DIR/$CHECKPOINT_FILE"} 2>&1 | tee -a ${JOBLOG} | grep -o 'JobSubmissionClient: Submitted Job.*' | cut -d' ' -f4)
 
-JOB_STATUS=$?
+if [ -z "$JOB_ID" ]; then
+    log_error "Failed to get job ID from submission"
+    exit 1
+fi
+
+log_info "Job submitted successfully with ID: $JOB_ID"
+
+# 监控任务状态
+MAX_MONITOR_TIME=3600  # 1小时超时
+START_TIME=$(date +%s)
+MONITOR_INTERVAL=30    # 每30秒检查一次
+
+while true; do
+    CURRENT_TIME=$(date +%s)
+    ELAPSED_TIME=$((CURRENT_TIME - START_TIME))
+    
+    if [ $ELAPSED_TIME -gt $MAX_MONITOR_TIME ]; then
+        log_error "Job monitoring timed out after ${MAX_MONITOR_TIME}s"
+        exit 1
+    fi
+    
+    STATUS=$(ray job status $JOB_ID 2>&1)
+    log_info "Job status: $STATUS"
+    
+    if echo "$STATUS" | grep -q "SUCCEEDED"; then
+        log_info "Job completed successfully"
+        break
+    elif echo "$STATUS" | grep -q "FAILED\|STOPPED\|PENDING"; then
+        log_error "Job failed or stopped unexpectedly"
+        log_info "=== Job Logs ==="
+        ray job logs $JOB_ID &>> ${JOBLOG}
+        exit 1
+    fi
+    
+    sleep $MONITOR_INTERVAL
+done
+
+JOB_STATUS=0
 if [ $JOB_STATUS -ne 0 ]; then
     log_error "Training job submission failed with status: ${JOB_STATUS}"
     # 收集额外的诊断信息
