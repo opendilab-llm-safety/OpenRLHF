@@ -39,7 +39,7 @@ export ip_head
 echo "IP Head: $ip_head"  &>> ${JOBLOG}
 
 # 激活 Conda 环境
-CONDA_ENV_PATH="/path/to/your/conda/envs/rlhf" # 请修改为你的Conda环境路径
+CONDA_ENV_PATH="/mnt/petrelfs/lixiangtian/miniconda3/envs/rlhf" 
 source $CONDA_ENV_PATH/bin/activate
 
 # 添加项目路径到 PYTHONPATH

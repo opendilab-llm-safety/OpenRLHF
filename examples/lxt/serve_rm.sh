@@ -7,8 +7,8 @@
 #SBATCH -t 3-00:00:00             
 #SBATCH --job-name=serve_rewardmodel
 #SBATCH --quotatype=auto          
-#SBATCH -o output.%j.log    
-#SBATCH -e error.%j.log     
+#SBATCH -o serve_rm_logs/output.%j.log    
+#SBATCH -e serve_rm_logs/error.%j.log     
 
 # 获取节点IP
 NODE_IP=$(hostname -I | awk '{print $1}')
