@@ -13,13 +13,10 @@
 
 # 项目设置
 OPENRLHF_PATH='/mnt/petrelfs/lixiangtian/workspace/OpenRLHF'
-MOUNT="$OPENRLHF_PATH:/openrlhf,$HOME/.cache:/root/.cache"
-IMAGE_NAME="nvcr.io/nvidia/pytorch:24.07-py3"
 RAY_VERSION=2.12.0
 
 JOBLOG="$(realpath .)/train_ppo_qwq-$SLURM_JOB_ID.log"
 echo "$(date '+%Y-%m-%d %H:%M:%S') Job ${SLURM_JOB_ID} started ..." &>> ${JOBLOG}
-
 
 # 读取奖励模型服务信息
 STATUS_FILE="rm_service_status.txt"
@@ -28,10 +25,6 @@ if [ ! -f "$STATUS_FILE" ]; then
     exit 1
 fi
 source $STATUS_FILE
-
-# 环境设置
-# export MASTER_PORT=29610
-# export MASTER_ADDR=$(scontrol show hostnames $SLURM_JOB_NODELIST | head -n 1)
 
 # Ray集群设置
 nodes=$(scontrol show hostnames "$SLURM_JOB_NODELIST")
@@ -45,8 +38,9 @@ export ip_head
 echo "IP Head: $ip_head"  &>> ${JOBLOG}
 
 echo "STARTING HEAD at $node_1"  &>> ${JOBLOG}
-srun --nodes=1 --ntasks=1 -w "$node_1" --container-image="$IMAGE_NAME" --container-mounts="$MOUNT" bash -c \
-    "source /openrlhf/env.sh \
+srun --nodes=1 --ntasks=1 -w "$node_1" bash -c \
+    "cd $OPENRLHF_PATH \
+    && source env.sh \
     && pip install ray[default]==$RAY_VERSION \
     && pip install openrlhf[vllm] \
     && /root/.local/bin/ray start --head --node-ip-address=$ip --port=$port --dashboard-port=20065 --dashboard-agent-grpc-port=20066 --block" &>> ${JOBLOG} &
@@ -56,8 +50,9 @@ worker_num=$((SLURM_JOB_NUM_NODES - 1)) #number of nodes other than the head nod
 for ((i = 1; i <= worker_num; i++)); do
     node_i=${nodes_array[$i]}
     echo "STARTING WORKER $i at $node_i"  &>> ${JOBLOG}
-    srun --nodes=1 --ntasks=1 -w "$node_i" --container-image="$IMAGE_NAME" --container-mounts="$MOUNT" bash -c \
-        "source /openrlhf/env.sh \
+    srun --nodes=1 --ntasks=1 -w "$node_i" bash -c \
+        "cd $OPENRLHF_PATH \
+        && source env.sh \
         && pip install ray[default]==$RAY_VERSION \
         && pip install openrlhf[vllm] \
         && /root/.local/bin/ray start --address "$ip_head" --block" &>> ${JOBLOG} &
@@ -75,12 +70,13 @@ fi
 
 echo "Using Reward Model Service: $RM_SERVICE_URL" &>> ${JOBLOG}
 # PPO训练命令
-srun --overlap --nodes=1 --ntasks=1 -w "$node_1" --container-image="$IMAGE_NAME" --container-mounts="$MOUNT" bash -c \
-    "source /openrlhf/env.sh \
+srun --overlap --nodes=1 --ntasks=1 -w "$node_1" bash -c \
+    "cd $OPENRLHF_PATH \
+    && source env.sh \
     && pip install ray[default]==$RAY_VERSION \
     && pip install openrlhf[vllm] \
     && /root/.local/bin/ray job submit --address=http://localhost:20065 \
-        --runtime-env-json='{\"working_dir\": \"/openrlhf\", \"pip\": \"/openrlhf/requirements.txt\"}' \
+        --runtime-env-json='{\"working_dir\": \".\", \"pip\": \"requirements.txt\"}' \
         -- python -m openrlhf.cli.train_ppo_ray \
         --ref_num_nodes 1 \
         --ref_num_gpus_per_node 2 \
