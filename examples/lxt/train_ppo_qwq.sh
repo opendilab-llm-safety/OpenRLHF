@@ -2,7 +2,7 @@
 
 #SBATCH -p mllm-align
 #SBATCH -N 2                       # 使用1个节点
-#SBATCH --ntasks-per-node=4        
+#SBATCH --ntasks-per-node=1        
 #SBATCH --gres=gpu:4         # 每个节点8张GP
 #SBATCH --mem=0                 # 全部内存
 #SBATCH -t 3-00:00:00             # 运行3天
@@ -10,6 +10,10 @@
 #SBATCH --quotatype=auto          # auto模式
 #SBATCH -o output.%j.log    # 标准输出文件
 #SBATCH -e error.%j.log     # 错误输出文件
+
+
+# set -x  # 打印执行的命令
+# exec 2>&1  # 将stderr重定向到stdout
 
 # 读取奖励模型服务信息
 STATUS_FILE="rm_service_status.txt"
@@ -20,24 +24,25 @@ fi
 source $STATUS_FILE
 
 # 环境设置
-export MASTER_PORT=29500
+export MASTER_PORT=29610
 export MASTER_ADDR=$(scontrol show hostnames $SLURM_JOB_NODELIST | head -n 1)
 
 # Ray集群设置
 nodes=$(scontrol show hostnames "$SLURM_JOB_NODELIST")
 nodes_array=( $nodes )
 node_1=${nodes_array[0]}
-ip_head=$node_1:6379
+node_ip=$(srun --nodes=1 --ntasks=1 -w "$node_1" hostname -I | awk '{print $1}')
+ip_head=$node_ip:20064
 
 # 启动Ray head节点
 srun --nodes=1 --ntasks=1 -w "$node_1" \
     ray start --head \
-    --node-ip-address=$node_1 \
-    --port=6379 \
-    --dashboard-port=8265 \
-    --dashboard-agent-grpc-port=15408 \
+    --node-ip-address=$node_ip \
+    --port=20064 \
+    --dashboard-port=20065 \
+    --dashboard-agent-grpc-port=20066 \
     --block &
-sleep 30
+sleep 100
 
 # 启动Ray worker节点
 for ((i = 1; i < SLURM_JOB_NUM_NODES; i++)); do
@@ -58,6 +63,8 @@ echo "Using Reward Model Service: $RM_SERVICE_URL"
 # PPO训练命令
 srun --overlap --nodes=1 --ntasks=1 -w "$node_1" \
 python -m openrlhf.cli.train_ppo_ray \
+    --ref_num_nodes 1 \
+    --ref_num_gpus_per_node 4 \
     --critic_num_nodes 1 \
     --critic_num_gpus_per_node 4 \
     --actor_num_nodes 1 \
@@ -105,5 +112,3 @@ python -m openrlhf.cli.train_ppo_ray \
     ${LATEST_CHECKPOINT:+--load_checkpoint "$LATEST_CHECKPOINT"} # 如果有checkpoint则加载
 
 
-# set -x  # 打印执行的命令
-# exec 2>&1  # 将stderr重定向到stdout
