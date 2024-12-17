@@ -65,6 +65,7 @@ deepspeed --module openrlhf.cli.train_ppo \
     --gradient_checkpointing \
     --lora_rank 8 \
     --lora_alpha 16 \
+    --target_modules "language_model.model.layers.*.self_attn.q_proj,language_model.model.layers.*.self_attn.k_proj,language_model.model.layers.*.self_attn.v_proj,language_model.model.layers.*.self_attn.o_proj" \
     --max_norm 1.0 \
     --eps_clip 0.2 \
     --value_clip 0.2 \
