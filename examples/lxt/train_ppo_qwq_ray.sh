@@ -3,6 +3,7 @@
 # 设置环境变量
 export VLLM_WORKER_MULTIPROC_METHOD=spawn
 export PYTHONPATH=/mnt/petrelfs/lixiangtian/workspace/OpenRLHF:$PYTHONPATH
+export RAY_JOB_RUNTIME_ENV='{"conda": {"env_name": "rlhf"}}'
 # 获取服务器IP地址
 SERVER_IP=$(hostname -I | awk '{print $1}')
 export RAY_ADDRESS=http://${SERVER_IP}:8265
@@ -37,15 +38,35 @@ fi
 source rm_service_status.txt
 log_info "Using reward model service: ${RM_SERVICE_URL}"
 
-# # 检查Ray集群状态
-# log_info "Checking Ray cluster status..."
-# # 使用curl检查Ray dashboard可用性
-# if ! curl -s "$RAY_ADDRESS/api/version" > /dev/null; then
-#     log_error "Cannot connect to Ray dashboard. Please ensure Ray cluster is running at $RAY_ADDRESS"
-#     log_error "You can start it with: ray start --head --num-gpus=8 --dashboard-host=0.0.0.0"
-#     exit 1
-# fi
-# log_info "Ray cluster is running and dashboard is accessible"
+# 停止现有Ray集群
+log_info "Stopping any existing Ray clusters..."
+ray stop || true
+log_info "Previous Ray clusters stopped"
+
+# 启动新的Ray集群
+log_info "Starting new Ray cluster..."
+ray start --head --num-gpus=8 --dashboard-host=0.0.0.0 --runtime-env='{"conda": {"env_name": "rlhf"}}'
+if [ $? -ne 0 ]; then
+    log_error "Failed to start Ray cluster"
+    exit 1
+fi
+log_info "Ray cluster started successfully"
+
+# 等待Ray集群完全启动
+sleep 10
+log_info "Waiting for Ray dashboard to be accessible..."
+MAX_RETRIES=30
+RETRY_COUNT=0
+while ! curl -s "$RAY_ADDRESS/api/version" > /dev/null && [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
+    sleep 2
+    RETRY_COUNT=$((RETRY_COUNT + 1))
+done
+
+if [ $RETRY_COUNT -eq $MAX_RETRIES ]; then
+    log_error "Ray dashboard not accessible after maximum retries"
+    exit 1
+fi
+log_info "Ray dashboard is accessible"
 
 # 提交训练任务
 log_info "Submitting training job..."
@@ -65,6 +86,7 @@ JOB_ID=$(ray job submit \
     --load_in_4bit \
     --lora_rank 8 \
     --lora_alpha 16 \
+    --target_modules "q_proj,k_proj,v_proj,o_proj" \
     --colocate_actor_ref \
     --pretrain /mnt/hwfile/llm-safety/models/InternVL2_5-QwQ-38B-v5 \
     --remote_rm_url "${RM_SERVICE_URL}" \

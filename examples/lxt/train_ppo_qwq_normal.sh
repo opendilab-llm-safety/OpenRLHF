@@ -1,7 +1,8 @@
 #!/bin/bash
 
-# 设置环境变量 
-export PYTHONPATH=/mnt/petrelfs/lixiangtian/workspace/OpenRLHF:$PYTHONPATH
+# Set environment variables
+MODEL_PATH="/mnt/hwfile/llm-safety/models/InternVL2_5-QwQ-38B-v5"
+export PYTHONPATH=/mnt/petrelfs/lixiangtian/workspace/OpenRLHF:${MODEL_PATH}:$PYTHONPATH
 
 # 创建日志目录
 mkdir -p train_ppo_logs
@@ -33,10 +34,47 @@ fi
 source rm_service_status.txt
 log_info "Using reward model service: ${RM_SERVICE_URL}"
 
+# Register the custom model
+log_info "Registering custom model..."
+
+# Create a temporary package directory
+mkdir -p internvl_pkg
+touch internvl_pkg/__init__.py
+
+# Create the registration module
+cat > internvl_pkg/register_internvl.py << EOL
+import os
+import sys
+from transformers import AutoConfig, AutoModel, AutoModelForCausalLM
+
+# Import from the model package
+from configuration_internvl_chat import InternVLChatConfig
+from modeling_internvl_chat import InternVLChatModel
+
+def register_model():
+    AutoConfig.register("internvl_chat", InternVLChatConfig)
+    AutoModel._model_mapping.register(InternVLChatConfig, InternVLChatModel)
+    AutoModelForCausalLM._model_mapping.register(InternVLChatConfig, InternVLChatModel)
+    model_type = "internvl_chat"
+    AutoModel._model_mapping._reverse_config_mapping[InternVLChatConfig.__name__] = model_type
+    AutoModelForCausalLM._model_mapping._reverse_config_mapping[InternVLChatConfig.__name__] = model_type
+
+register_model()
+EOL
+
+# Create the main script
+cat > internvl_pkg/train_script.py << EOL
+from internvl_pkg.register_internvl import register_model
+from openrlhf.cli import train_ppo
+
+if __name__ == "__main__":
+    train_ppo.train(train_ppo.parser.parse_args())
+EOL
+
 # 启动训练
 log_info "Starting PPO training..."
 
-deepspeed --module openrlhf.cli.train_ppo \
+deepspeed internvl_pkg/train_script.py \
     --pretrain /mnt/hwfile/llm-safety/models/InternVL2_5-QwQ-38B-v5 \
     --remote_rm_url "${RM_SERVICE_URL}" \
     --save_path /mnt/hwfile/llm-safety/checkpoints/InternVL2_5-QwQ-38B-v5-PPO-MetaMathQA \
@@ -65,7 +103,7 @@ deepspeed --module openrlhf.cli.train_ppo \
     --gradient_checkpointing \
     --lora_rank 8 \
     --lora_alpha 16 \
-    --target_modules "language_model.model.layers.*.self_attn.q_proj,language_model.model.layers.*.self_attn.k_proj,language_model.model.layers.*.self_attn.v_proj,language_model.model.layers.*.self_attn.o_proj" \
+    --target_modules "q_proj,k_proj,v_proj,o_proj" \
     --max_norm 1.0 \
     --eps_clip 0.2 \
     --value_clip 0.2 \
@@ -77,6 +115,9 @@ deepspeed --module openrlhf.cli.train_ppo \
     --use_wandb "${WANDB_API_KEY}" 2>&1 | tee -a "${LOGFILE}"
 
 training_status=$?
+
+# Cleanup
+rm -rf internvl_pkg
 
 if [ $training_status -eq 0 ]; then
     log_info "Training completed successfully"
