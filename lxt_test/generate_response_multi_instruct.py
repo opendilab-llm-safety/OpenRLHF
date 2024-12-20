@@ -84,7 +84,7 @@ def process_batch(args):
             new_item['model_responses'] = responses
             
             with open(output_file, "a") as f:
-                json.dump(new_item, f, indent=2)
+                json.dump(new_item, f, indent=2, ensure_ascii=False)
                 if i < len(batch) - 1:
                     f.write(",\n")
                 else:
@@ -94,7 +94,7 @@ def process_batch(args):
             new_item = item.copy()
             new_item['model_responses'] = ["ERROR: Failed to generate response"] * n_samples
             with open(output_file, "a") as f:
-                json.dump(new_item, f, indent=2)
+                json.dump(new_item, f, indent=2, ensure_ascii=False)
                 if i < len(batch) - 1:
                     f.write(",\n")
                 else:
