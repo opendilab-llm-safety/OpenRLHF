@@ -10,6 +10,9 @@ from tqdm import tqdm
 from openai import OpenAI
 from tenacity import retry, stop_after_attempt, wait_random_exponential
 from datetime import datetime
+import base64
+from PIL import Image
+import io
 
 class ModelConfig:
     def __init__(self, base_url: str, model_name: str, api_key: str):
@@ -21,42 +24,70 @@ class ModelConfig:
             api_key=api_key
         )
 
-MODEL_CONFIGS = [
+def encode_image(image_path: str) -> str:
+    try:
+        with Image.open(image_path) as img:
+            if img.mode == 'RGBA':
+                img = img.convert('RGB')
+            buffer = io.BytesIO()
+            img.save(buffer, format='JPEG')
+            image_bytes = buffer.getvalue()
+            return base64.b64encode(image_bytes).decode('utf-8')
+    except Exception as e:
+        print(f"Error encoding image {image_path}: {e}")
+        return None
+
+# 分离执行模型和裁判员模型配置
+EXECUTOR_MODEL_CONFIGS = [
+    ModelConfig(
+        base_url="http://10.140.0.134:10005/v1",
+        model_name="intern_qwq_v5",
+        api_key="EMPTY"
+    ),
+]
+
+REFEREE_MODEL_CONFIGS = [
     ModelConfig(
         base_url="http://10.140.1.29:10005/v1",
         model_name="intern_qwq_v5",
         api_key="EMPTY"
     ),
-    ModelConfig(
-        base_url="http://10.140.1.144:10015/v1",
-        model_name="intern_qwq_v5",
-        api_key="EMPTY"
-    ),
-    ModelConfig(
-        base_url="http://10.140.1.11:10025/v1",
-        model_name="intern_qwq_v5",
-        api_key="EMPTY"
-    ),
-    # ���加裁判员模型配置
-    ModelConfig(
-        base_url="YOUR_REFEREE_MODEL_BASE_URL",  # 请替换为您的裁判员模型地址
-        model_name="YOUR_REFEREE_MODEL_NAME",  # 请替换为您的裁判员模型名称
-        api_key="YOUR_REFEREE_MODEL_API_KEY"   # 请替换为您的裁判员模型 API 密钥
-    ),
 ]
 
 # 定义一个函数用于生成回复
 @retry(wait=wait_random_exponential(min=1, max=60), stop=stop_after_attempt(5))
-def generate_response(prompt: str, model_config: ModelConfig) -> str:
+def generate_response(item: dict, model_config: ModelConfig) -> str:
     try:
+        # 读取并编码图片
+        image_base64 = encode_image(item['image_path'])
+        if image_base64 is None:
+            raise Exception("Failed to encode image")
+
         response = model_config.client.chat.completions.create(
             model=model_config.model_name,
             messages=[
-                {"role": "system", "content": "You are a helpful and harmless assistant. You are Qwen developed by Alibaba. You should think step-by-step."},
-                {"role": "user", "content": prompt}
+                {
+                    "role": "system",
+                    "content": "You are a helpful and harmless assistant. You are Qwen developed by Alibaba. You should think step-by-step."
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": item['prompt']
+                        },
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:image/jpeg;base64,{image_base64}"
+                            }
+                        }
+                    ]
+                }
             ],
-            temperature=2,
-            n=1,  # 每次只生成一个回复
+            temperature=0.7,
+            n=1,
             max_tokens=12800
         )
         return response.choices[0].message.content
@@ -68,60 +99,181 @@ def generate_response(prompt: str, model_config: ModelConfig) -> str:
 @retry(wait=wait_random_exponential(min=1, max=60), stop=stop_after_attempt(5))
 def judge_response(prompt: str, model_response: str, target: str, referee_config: ModelConfig) -> str:
     try:
-        judge_prompt = f"Prompt: {prompt}\nGenerated Response: {model_response}\nReference Answer: {target}\n\nIs the generated response correct based on the reference answer? Answer 'Yes' or 'No'."
+        judge_prompt = f"""As an AI evaluation expert, please assess the generated response against the reference answer.
+
+=== Input Information ===
+<prompt>
+{prompt}
+</prompt>
+
+<generated_response>
+{model_response}
+</generated_response>
+
+<reference_answer>
+{target}
+</reference_answer>
+
+=== Evaluation Criteria ===
+1. Semantic Accuracy: Check if the core meaning matches
+2. Numerical Precision: For numerical answers, verify approximate equality
+3. Key Points Coverage: For descriptive answers, verify essential points
+4. Overall Coherence: Evaluate response clarity and relevance
+
+=== Output Format Requirements ===
+Your evaluation must be provided in XML format as follows:
+<evaluation>
+    <analysis>
+        [2-3 sentences explaining the comparison]
+    </analysis>
+    <detailed_scores>
+        <semantic_accuracy>[0-100]</semantic_accuracy>
+        <numerical_precision>[0-100]</numerical_precision>
+        <key_points>[0-100]</key_points>
+        <coherence>[0-100]</coherence>
+    </detailed_scores>
+    <final_score>[0-100]</final_score>
+</evaluation>
+
+Example Output:
+<evaluation>
+    <analysis>
+        The response accurately captures the main concept with precise numerical values. The explanation is clear and well-structured, covering all essential points from the reference.
+    </analysis>
+    <detailed_scores>
+        <semantic_accuracy>90</semantic_accuracy>
+        <numerical_precision>95</numerical_precision>
+        <key_points>85</key_points>
+        <coherence>88</coherence>
+    </detailed_scores>
+    <final_score>89</final_score>
+</evaluation>
+
+Your Evaluation:
+"""
+
         response = referee_config.client.chat.completions.create(
             model=referee_config.model_name,
             messages=[
-                {"role": "system", "content": "You are a strict judge evaluating the correctness of a generated response."},
-                {"role": "user", "content": judge_prompt}
+                {
+                    "role": "system",
+                    "content": "You are a strict judge evaluating the correctness of responses. You must follow the XML output format exactly."
+                },
+                {
+                    "role": "user",
+                    "content": judge_prompt
+                }
             ],
-            temperature=0.1,  # 裁判员的温度可以设置低一些
+            temperature=0.1,
             n=1,
-            max_tokens=100
+            max_tokens=800,
+            guided_regex=r"<evaluation>\s*<analysis>[\s\S]*?</analysis>\s*<detailed_scores>\s*<semantic_accuracy>\d{1,3}</semantic_accuracy>\s*<numerical_precision>\d{1,3}</numerical_precision>\s*<key_points>\d{1,3}</key_points>\s*<coherence>\d{1,3}</coherence>\s*</detailed_scores>\s*<final_score>\d{1,3}</final_score>\s*</evaluation>"
         )
-        return response.choices[0].message.content.strip()
+        
+        full_response = response.choices[0].message.content.strip()
+        
+        # 使用正则表达式提取评估结果
+        import re
+        
+        # 提取完整的evaluation标签内容
+        eval_match = re.search(r'<evaluation>(.*?)</evaluation>', full_response, re.DOTALL)
+        if not eval_match:
+            raise ValueError("Failed to extract evaluation XML")
+            
+        # 提取各个部分
+        analysis_match = re.search(r'<analysis>(.*?)</analysis>', full_response, re.DOTALL)
+        final_score_match = re.search(r'<final_score>(\d{1,3})</final_score>', full_response)
+        
+        # 提取详细分数
+        detailed_scores = {
+            'semantic_accuracy': int(re.search(r'<semantic_accuracy>(\d{1,3})</semantic_accuracy>', full_response).group(1)),
+            'numerical_precision': int(re.search(r'<numerical_precision>(\d{1,3})</numerical_precision>', full_response).group(1)),
+            'key_points': int(re.search(r'<key_points>(\d{1,3})</key_points>', full_response).group(1)),
+            'coherence': int(re.search(r'<coherence>(\d{1,3})</coherence>', full_response).group(1))
+        }
+
+        if final_score_match:
+            final_score = int(final_score_match.group(1))
+            return {
+                "full_evaluation": full_response,
+                "analysis": analysis_match.group(1).strip() if analysis_match else "",
+                "detailed_scores": detailed_scores,
+                "final_score": final_score,
+                "is_acceptable": final_score >= 80
+            }
+        else:
+            return {
+                "full_evaluation": full_response,
+                "score": 0,
+                "is_acceptable": False,
+                "error": "Failed to extract final score"
+            }
     except Exception as e:
         print(f"Error during judging: {e}")
-        return "ERROR: Judging failed"
+        return {
+            "full_evaluation": "ERROR: Judging failed",
+            "score": 0,
+            "is_acceptable": False,
+            "error": str(e)
+        }
 
 def process_batch(args):
-    batch, n_samples, process_id, output_dir, referee_config = args
-    executor_configs = [config for config in MODEL_CONFIGS if config != referee_config] # 排除裁判员模型
+    batch, n_samples, process_id, output_dir = args
+    referee_config = random.choice(REFEREE_MODEL_CONFIGS)
     
-    results = []
-    output_path = Path(output_dir) / f"process_{process_id}_results.jsonl" # 每个进程单独保存
+    output_path = Path(output_dir) / f"process_{process_id}_results.jsonl"
     
     for item in tqdm(batch, desc=f"Process {process_id}", position=process_id):
-        prompt = item['prompt']
-        target = item['target']
         model_responses = []
         
         for i in range(n_samples):
-            executor_config = random.choice(executor_configs)
+            executor_config = random.choice(EXECUTOR_MODEL_CONFIGS)
             try:
-                response = generate_response(prompt, executor_config)
+                response = generate_response(item, executor_config)
+                judgment = judge_response(item['prompt'], response, item['target'], referee_config)
                 
-                # 让裁判员判断
-                judgment = judge_response(prompt, response, target, referee_config)
+                model_responses.append({
+                    "response": response,
+                    "judgment": judgment,
+                    "model_name": executor_config.model_name
+                })
                 
-                model_responses.append({"response": response, "judgment": judgment})
-                
-                # 保存当前样本的生成结果
+                # 实时保存结果
                 with open(output_path, "a") as f:
-                    json.dump({"prompt": prompt, "target": target, "model_responses": model_responses}, f)
+                    json.dump({
+                        "prompt": item['prompt'],
+                        "target": item['target'],
+                        "image_path": item['image_path'],
+                        "model_responses": model_responses
+                    }, f)
                     f.write('\n')
                 
-                if "yes" in judgment.lower():
-                    break # 如果裁判员判断正确，则停止生成
+                if judgment.get("is_acceptable", False):
+                    break  # 如果得分达到及格线，则停止生成
             except Exception as e:
-                print(f"Process {process_id} failed on sample: {e}")
-                model_responses.append({"response": "ERROR: Failed to generate response", "judgment": "ERROR: Generation failed"})
-                # 保存错误信息
+                print(f"Process {process_id} failed: {e}")
+                model_responses.append({
+                    "response": "ERROR: Failed to generate response",
+                    "judgment": {
+                        "full_evaluation": "ERROR: Generation failed",
+                        "score": 0,
+                        "is_acceptable": False,
+                        "error": str(e)
+                    },
+                    "model_name": executor_config.model_name
+                })
+                
                 with open(output_path, "a") as f:
-                    json.dump({"prompt": prompt, "target": target, "model_responses": model_responses}, f)
+                    json.dump({
+                        "prompt": item['prompt'],
+                        "target": item['target'],
+                        "image_path": item['image_path'],
+                        "model_responses": model_responses,
+                        "error": str(e)
+                    }, f)
                     f.write('\n')
     
-    return None # 不需要返回，因为已经实时保存
+    return None
 
 def generate_all_responses(sampled_data_path: str, output_dir: str):
     # 1. 加载抽样数据
@@ -132,16 +284,7 @@ def generate_all_responses(sampled_data_path: str, output_dir: str):
     output_dir = Path(output_dir)
     output_dir.mkdir(exist_ok=True)
     
-    # 3. 选择裁判员模型配置
-    referee_config = None
-    for config in MODEL_CONFIGS:
-        if config.base_url == "YOUR_REFEREE_MODEL_BASE_URL": # 简单判断，可以根据实际情况修改
-            referee_config = config
-            break
-    if not referee_config:
-        raise ValueError("Referee model configuration not found. Please check MODEL_CONFIGS.")
-    
-    # 4. 多进程生成回复
+    # 3. 多进程生成回复
     n_processes = min(mp.cpu_count()*10, 1000)
     n_samples = 100  # 设置最大生成次数
     
@@ -150,7 +293,7 @@ def generate_all_responses(sampled_data_path: str, output_dir: str):
     batches = [sampled_data[i:i + batch_size] for i in range(0, len(sampled_data), batch_size)]
     
     # 准备进程参数
-    process_args = [(batch, n_samples, i, output_dir, referee_config) for i, batch in enumerate(batches)]
+    process_args = [(batch, n_samples, i, output_dir) for i, batch in enumerate(batches)]
     
     # 使用进程池处理数据
     print(f"Starting generation with {n_processes} processes...")
@@ -160,7 +303,7 @@ def generate_all_responses(sampled_data_path: str, output_dir: str):
     print(f"Processing complete. Results are saved in individual process files in {output_dir}")
 
 if __name__ == "__main__":
-    sampled_data_path = "multi_instruct_output_10000_20241221_002936"
+    sampled_data_path = "/mnt/petrelfs/lixiangtian/workspace/OpenRLHF/lxt_test/multi_instruct_output_10000_20241222_060400"
     sampled_data_json_path = f"{sampled_data_path}/sampled_data.json"
     response_output_dir = f"{sampled_data_path}/output"
     
