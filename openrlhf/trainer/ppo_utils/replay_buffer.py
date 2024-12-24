@@ -172,9 +172,12 @@ class NaiveReplayBuffer(ABC):
 
     @torch.no_grad()
     def append(self, experience: Experience) -> None:
+        breakpoint()
+        print(f"Before append - buffer size: {len(self.items)}")
         if self.cpu_offload:
             experience.to_device(torch.device("cpu"))
         items = split_experience_batch(experience)
+        print(f"Split items count: {len(items)}")
         # the packed samples comes with no padding
         if not self.packing_samples:
             items = remove_padding_in_sequences(items)
@@ -183,6 +186,7 @@ class NaiveReplayBuffer(ABC):
             samples_to_remove = len(self.items) - self.limit
             if samples_to_remove > 0:
                 self.items = self.items[samples_to_remove:]
+        print(f"After append - buffer size: {len(self.items)}")
 
     def clear(self) -> None:
         self.items.clear()
@@ -206,12 +210,30 @@ class NaiveReplayBuffer(ABC):
         return experience
 
     def normalize(self, attribute: str, strategy) -> None:
+        breakpoint()
+        print(f"Starting normalization for {attribute}")
         assert attribute == "advantages"
         items = []
         action_masks = []
         for item in self:
-            items.append(getattr(item, attribute))
+            curr_attr = getattr(item, attribute)
+            print(f"Item {attribute} shape: {curr_attr.shape if curr_attr is not None else None}")
+            items.append(curr_attr)
             action_masks.append(item.action_mask)
+        
+            print(f"Total items collected: {len(items)}")
+        
+        if len(items) == 0:
+            print("Warning: No items found for normalization!")
+            return
+        
+        try:
+            items_vector = torch.cat(items).float().flatten()
+            print(f"Concatenated vector shape: {items_vector.shape}")
+        except Exception as e:
+            print(f"Error during concatenation: {e}")
+            print(f"First few items shapes: {[item.shape if item is not None else None for item in items[:5]]}")
+            raise
 
         items_vector = torch.cat(items).float().flatten()
 

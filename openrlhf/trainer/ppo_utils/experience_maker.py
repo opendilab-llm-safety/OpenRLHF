@@ -307,6 +307,9 @@ class NaiveExperienceMaker(ABC):
         if self.critic is not None:
             self.critic.train()
 
+        print(f"Generated experience - advantages shape: {advantages.shape}")
+        print(f"Sample values: {advantages[:5]}")  # 打印前几个值
+
         return Experience(
             sequences,
             action_log_probs,

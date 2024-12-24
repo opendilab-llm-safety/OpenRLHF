@@ -1,0 +1,1 @@
+RM_SERVICE_URL=http://10.140.0.134:20020/get_reward

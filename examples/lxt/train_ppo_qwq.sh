@@ -125,7 +125,7 @@ srun --overlap --nodes=1 --ntasks=1 -w "$node_1" bash -c \
         --advantage_estimator gae \
         --wandb_project ppo-training \
         --wandb_run_name InternVL2_5-QwQ-38B-v5-ppo \
-        --use_wandb wandb_token \
+        --use_wandb "${WANDB_API_KEY}" \
         ${CHECKPOINT_FILE:+--load_checkpoint "$CHECKPOINT_DIR/$CHECKPOINT_FILE"}" &>> ${JOBLOG} # 如果有checkpoint则加载
 
 
