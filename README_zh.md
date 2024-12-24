@@ -97,7 +97,7 @@ sudo pip uninstall xgboost transformer_engine flash_attn -y
 # pip install
 pip install openrlhf
 
-# 如果你需要使用 vLLM 加速 (安装 vLLM 0.6.4.post1)
+# 如果你需要使用 vLLM 加速 (安装 vLLM 0.6.5)
 pip install openrlhf[vllm]
 # 最新的 vLLM 也是支持的
 pip install openrlhf[vllm_latest]
@@ -112,7 +112,7 @@ pip install -e .
 ```
 
 > [!NOTE]
->我们推荐使用 vLLM 0.6.4+ (仅支持多节点时 NCCL 权重同步) 或者 vLLM 0.4.2 (`--vllm_sync_backend nccl`)，其他版本目前需要通过 Gloo 进行权重同步（`--vllm_sync_backend gloo`）。
+>我们推荐使用 vLLM 0.6.4+，其他版本 (vLLM >= 0.4.2) 可能需要通过 Gloo 进行权重同步（`--vllm_sync_backend gloo`）。
 >我们也提供了 [Dockerfiles for vLLM](./dockerfile/) 和 [Nvidia-Docker 一键安装脚本](./examples/scripts/nvidia_docker_install.sh)。
 
 ### 准备数据集
@@ -199,6 +199,11 @@ deepspeed --module openrlhf.cli.train_sft \
 # --input_key {JSON Key}
 # --tokenizer_chat_template {HF Chat Template}
 
+# 支持 RingAttention
+# pip install ring_flash_attn
+#   --ring_attn_size 2 \
+#   --ring_head_stride 2 \
+
 # 也可用于 continued pre-training
 # --pretrain_mode
 ```
@@ -244,7 +249,7 @@ reward_model = AutoModelForSequenceClassification.from_pretrained(
               use_cache=False,
           )
 inputs = xxxx (Left Padding Input Tokens)
-reward = reward_model.model(*inputs)
+reward = reward_model.model(*inputs).last_hidden_state
 reward = reward_model.score(reward)[:, -1]
 ```
 
@@ -338,8 +343,6 @@ ray job submit --address="http://127.0.0.1:8265" \
   --load_checkpoint \
   --use_wandb {wandb_token}
 
-# --vllm_sync_backend nccl (Only for multi-nodes with vLLM 0.6.4+ or vLLM 0.4.2)
-
 # 支持远程 reward model (HTTP)
 # --remote_rm_url http://localhost:5000/get_reward
 
@@ -379,7 +382,7 @@ ray job submit --address="http://127.0.0.1:8265" \
 > 数据已经过时; 请参考后面的调优指南重新测试
 
 ## 调优指南
-为了获得最佳的性能，我们建议您分配更多的节点给 vLLM Engine。例如，对于 70B 模型以及 32 张 A100，建议分配 16 张以上 A100 给 vLLM Engine，8 张给 Actor 模型，以及最后 8 张给 Critic 模型，同时开启 `--colocate_critic_reward`, `--colocate_actor_ref` 或者 `--ref_reward_offload (可选)` 选项合并部分节点。最后您应该尽可能增大 `--rollout_micro_batch_size` ，以及减小 vLLM 的 TP 切分数量。训练阶段的 `micro_train_batch_size` 也是越大越好，请同时使用 `--packing_samples` 。当 GPU 数量足够时请关闭 `--adam_offload`. 对于多节点 RLHF, 请使用 `--vllm_sync_backend nccl` with vLLM 0.6.4+.
+为了获得最佳的性能，我们建议您分配更多的节点给 vLLM Engine。例如，对于 70B 模型以及 32 张 A100，建议分配 16 张以上 A100 给 vLLM Engine，8 张给 Actor 模型，以及最后 8 张给 Critic 模型，同时开启 `--colocate_critic_reward`, `--colocate_actor_ref` 或者 `--ref_reward_offload (可选)` 选项合并部分节点。最后您应该尽可能增大 `--rollout_micro_batch_size` ，以及减小 vLLM 的 TP 切分数量。训练阶段的 `micro_train_batch_size` 也是越大越好，请同时使用 `--packing_samples` 。当 GPU 数量足够时请关闭 `--adam_offload` 以及启用 `--overlap_comm`. 对于多节点 RLHF, 请使用 `--vllm_sync_backend nccl` with vLLM 0.6.4+.
 
 ## 使用 OpenRLHF 的公司和组织
 

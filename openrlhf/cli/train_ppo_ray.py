@@ -210,7 +210,7 @@ if __name__ == "__main__":
         default=1,
         help="tensor parallel size of vLLM Engine for multi-GPU inference",
     )
-    parser.add_argument("--vllm_sync_backend", type=str, default="gloo", help="DeepSpeed -> vLLM weight sync backend")
+    parser.add_argument("--vllm_sync_backend", type=str, default="nccl", help="DeepSpeed -> vLLM weight sync backend")
     parser.add_argument("--enable_prefix_caching", action="store_true", default=False)
     parser.add_argument("--enforce_eager", action="store_true", default=False, help="Disable CUDA graph in vLLM")
 
@@ -235,7 +235,7 @@ if __name__ == "__main__":
     parser.add_argument("--actor_init_on_gpu", action="store_true", default=False)
     parser.add_argument("--flash_attn", action="store_true", default=False, help="Enable FlashAttention2")
     parser.add_argument("--grad_accum_dtype", type=str, default=None, help="Adam grad accum data type")
-    parser.add_argument("--disable_trace_cache", action="store_true", default=False)
+    parser.add_argument("--overlap_comm", action="store_true", default=False)
     parser.add_argument("--gradient_checkpointing_use_reentrant", action="store_true", default=False)
     parser.add_argument("--disable_fast_tokenizer", action="store_true", default=False)
 
