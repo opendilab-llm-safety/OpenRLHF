@@ -172,7 +172,7 @@ class NaiveReplayBuffer(ABC):
 
     @torch.no_grad()
     def append(self, experience: Experience) -> None:
-        breakpoint()
+        # breakpoint()
         print(f"Before append - buffer size: {len(self.items)}")
         if self.cpu_offload:
             experience.to_device(torch.device("cpu"))
@@ -210,7 +210,7 @@ class NaiveReplayBuffer(ABC):
         return experience
 
     def normalize(self, attribute: str, strategy) -> None:
-        breakpoint()
+        # breakpoint()
         print(f"Starting normalization for {attribute}")
         assert attribute == "advantages"
         items = []

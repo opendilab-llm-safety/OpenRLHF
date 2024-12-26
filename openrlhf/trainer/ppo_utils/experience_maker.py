@@ -182,6 +182,7 @@ class NaiveExperienceMaker(ABC):
             all_prompts = [all_prompts]
 
         # 处理结构化输入
+        breakpoint()
         prompts = []
         references = []
         for item in all_prompts:
@@ -526,6 +527,7 @@ class RemoteExperienceMaker(NaiveExperienceMaker):
                 "actor_value_rm_time": 0,
                 "wait_time": 0,
             }
+        breakpoint()
         experiences = super().make_experience_list(all_prompts, **generate_kwargs)
         if self.critic is not None:
             for experience in experiences:
