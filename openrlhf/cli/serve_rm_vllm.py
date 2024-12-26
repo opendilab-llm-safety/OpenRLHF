@@ -149,7 +149,7 @@ class RewardModelProxy:
             batch_references = None
             if references is not None:
                 batch_references = references[i:min(len(references), i + batch_size)]
-            batch_scores = self._process_batch(batch_queries, batch_responses, batch_references)
+            batch_scores = self._process_batch(batch_sequences, batch_references)
             scores.extend(batch_scores)
             
         return scores
