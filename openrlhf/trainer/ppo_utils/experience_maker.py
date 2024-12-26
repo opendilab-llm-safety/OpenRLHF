@@ -213,7 +213,7 @@ class NaiveExperienceMaker(ABC):
                     generate_kwargs["gamma"],
                     generate_kwargs["lambd"],
                 )
-            elif self.advantage_estimator'prompt' in ["reinforce", "rloo"]:
+            elif self.advantage_estimator in ["reinforce", "rloo"]:
                 experience.returns = self.get_cumulative_returns(
                     reward,
                     experience.action_mask,

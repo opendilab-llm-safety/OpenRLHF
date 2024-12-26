@@ -94,7 +94,7 @@ class RewardModelProxy:
 """
             eval_text += f"""==========
 <助手回复>
-{response}
+{sequence}
 </助手回复>
 
 ==========
@@ -130,24 +130,22 @@ class RewardModelProxy:
         references = data.get("references", None)
         
         if self.batch_size is None:
-            batch_size = len(queries)
+            batch_size = len(sequences)
         else:
             batch_size = self.batch_size
             
         # 处理pad token
-        for i in range(len(queries)):
-            queries[i] = strip_sequence(queries[i], self.pad_token, self.eos_token) + self.eos_token
-            responses[i] = strip_sequence(responses[i], self.pad_token, self.eos_token) + self.eos_token
+        for i in range(len(sequences)):
+            sequences[i] = strip_sequence(sequences[i], self.pad_token, self.eos_token) + self.eos_token
             if references is not None:
                 references[i] = strip_sequence(references[i], self.pad_token, self.eos_token) + self.eos_token
                 
-        logger.info(f"Sample evaluation:\nQuery: {queries[0]}\nResponse: {responses[0]}\nReference: {references[0] if references else 'None'}")
+        logger.info(f"Sample evaluation:\nSequence: {sequences[0]}\nReference: {references[0] if references else 'None'}")
         
         scores = []
         # 批量处理
-        for i in range(0, len(queries), batch_size):
-            batch_queries = queries[i:min(len(queries), i + batch_size)]
-            batch_responses = responses[i:min(len(responses), i + batch_size)]
+        for i in range(0, len(sequences), batch_size):
+            batch_sequences = sequences[i:min(len(sequences), i + batch_size)]
             batch_references = None
             if references is not None:
                 batch_references = references[i:min(len(references), i + batch_size)]
