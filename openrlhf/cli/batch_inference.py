@@ -67,7 +67,7 @@ def batch_generate_vllm(args):
         prompts_data = prompts_data.select(range(start_idx, min(end_idx, len(prompts_data))))
 
     prompts_dataset = PromptDataset(prompts_data, tokenizer, dummy_strategy, input_template=args.input_template)
-    prompts = list(prompts_dataset)
+    prompts = [item[0] if isinstance(item, tuple) else item for item in prompts_dataset]
 
     # Conditional SFT inference
     if args.enable_csft:

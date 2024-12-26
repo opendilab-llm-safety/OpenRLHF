@@ -57,6 +57,8 @@ class PromptDataset(Dataset):
         return length
 
     def __getitem__(self, idx):
-        if self.references[idx] is not None:
-            return self.prompts[idx], self.references[idx]
-        return self.prompts[idx]
+        prompt = self.prompts[idx]
+        reference = self.references[idx]
+        if reference is not None:
+            return (prompt, reference)
+        return prompt

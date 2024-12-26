@@ -104,6 +104,7 @@ class Samples:
     packed_seq_lens: None or (B,), the length of each sample in the packed samples.
     response_length: (B,), the number of tokens in the response.
     total_length: (B,), the total number of tokens in the sequences.
+    references: Optional[List[str]], the reference answers for each sample.
     """
 
     sequences: torch.Tensor
@@ -113,6 +114,7 @@ class Samples:
     packed_seq_lens: Optional[torch.Tensor]
     response_length: torch.Tensor
     total_length: torch.Tensor
+    references: Optional[List[str]] = None
 
 
 class NaiveExperienceMaker(ABC):
@@ -168,7 +170,7 @@ class NaiveExperienceMaker(ABC):
         return {k: v.to(device) for k, v in batch.items()}
 
     @torch.no_grad()
-    def make_experience_list(self, all_prompts: Union[str, List[str]], **generate_kwargs) -> List[Experience]:
+    def make_experience_list(self, all_prompts: Union[str, List[str], Tuple[List[str], List[str]]], **generate_kwargs) -> List[Experience]:
         """
         Make a list of experience with the micro_rollout_batch_size.
 
@@ -177,8 +179,14 @@ class NaiveExperienceMaker(ABC):
         After that, we will calculate the advantages and returns for each experience.
         """
         args = self.strategy.args
+        # Handle possible tuple input (prompts, references)
+        if isinstance(all_prompts, tuple):
+            all_prompts, references = all_prompts
+        else:
+            references = None
+            
         # generate responses
-        samples_list = self.generate_samples(all_prompts, **generate_kwargs)
+        samples_list = self.generate_samples(all_prompts, references=references, **generate_kwargs)
         torch.distributed.barrier()
 
         experiences = []
@@ -238,7 +246,7 @@ class NaiveExperienceMaker(ABC):
         return experiences
 
     @torch.no_grad()
-    def generate_samples(self, all_prompts: List[str], **generate_kwargs) -> List[Samples]:
+    def generate_samples(self, all_prompts: List[str], references: Optional[List[str]] = None, **generate_kwargs) -> List[Samples]:
         """
         Generate samples and return in batches.
         """
@@ -247,9 +255,13 @@ class NaiveExperienceMaker(ABC):
         self.actor.eval()
         # sample multiple response
         all_prompts = sum([[prompt] * args.n_samples_per_prompt for prompt in all_prompts], [])
+        if references is not None:
+            references = sum([[ref] * args.n_samples_per_prompt for ref in references], [])
+            
         samples_list = []
         for i in range(0, len(all_prompts), args.micro_rollout_batch_size):
             prompts = all_prompts[i : i + args.micro_rollout_batch_size]
+            batch_references = references[i : i + args.micro_rollout_batch_size] if references else None
             inputs = self.tokenize_fn(prompts, self.prompt_max_len, device="cuda")
             sequences, attention_mask, action_mask = self.actor.generate(**inputs, **generate_kwargs)
             samples = Samples(
@@ -260,6 +272,7 @@ class NaiveExperienceMaker(ABC):
                 packed_seq_lens=None,
                 response_length=action_mask.float().sum(dim=-1),
                 total_length=attention_mask.float().sum(dim=-1),
+                references=batch_references
             )
             samples_list.append(samples)
         return samples_list
