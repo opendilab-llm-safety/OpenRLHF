@@ -65,7 +65,8 @@ class RewardModelProxy:
         for i, sequence in enumerate(sequences):
             reference = references[i] if references is not None else None
             # 构建评估文本
-            eval_text = f"""请根据以下维度评估assistant的回答：
+            eval_text = f"""你是一个专业的对话评估专家，你非常擅长评价assistant是否遵循了user的指令并做出了正确的回复。
+你将会收到一个user和assistant的对话，包括user的指令、assistant的回答，和参考答案。请根据以下维度评估assistant的回答是否遵循了user的指令并做出了正确的回复，最后给出简要分析和你的打分：
 1. 回答的准确性和相关性
 2. 回答的完整性
 3. 最终答案的格式正确性
@@ -92,13 +93,7 @@ class RewardModelProxy:
 </参考答案>
 
 """
-            eval_text += f"""==========
-<助手回复>
-{sequence}
-</助手回复>
 
-==========
-请给出你的评估："""
             
             try:
                 # 使用vLLM的OpenAI API进行评估
