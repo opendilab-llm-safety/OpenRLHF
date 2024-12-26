@@ -45,13 +45,18 @@ class PromptDataset(Dataset):
             apply_chat_template = self.tokenizer.apply_chat_template
 
         self.prompts = []
+        self.references = []
+        reference_key = getattr(self.strategy.args, "reference_key", "reference")
         for data in tqdm(dataset, desc="Preprocessing data", disable=not self.strategy.is_rank_0()):
             prompt = preprocess_data(data, input_template, input_key, apply_chat_template)
             self.prompts.append(prompt)
+            self.references.append(data.get(reference_key, None))  # 读取reference
 
     def __len__(self):
         length = len(self.prompts)
         return length
 
     def __getitem__(self, idx):
+        if self.references[idx] is not None:
+            return self.prompts[idx], self.references[idx]
         return self.prompts[idx]

@@ -60,10 +60,9 @@ class RewardModelProxy:
             logger.error(f"Failed to connect to vLLM service: {e}")
             raise
     
-    def _process_batch(self, queries, responses, references=None):
+    def _process_batch(self, sequences, references=None):
         batch_scores = []
-        
-        for i, (query, response) in enumerate(zip(queries, responses)):
+        for i, sequence in enumerate(sequences):
             reference = references[i] if references is not None else None
             # 构建评估文本
             eval_text = f"""请根据以下维度评估assistant的回答：
@@ -81,9 +80,9 @@ class RewardModelProxy:
 以下是需要评估的对话：
 
 ==========
-<用户指令>
-{query}
-</用户指令>
+<完整对话>
+{sequence}
+</完整对话>
 
 """
             if reference is not None:
@@ -127,9 +126,8 @@ class RewardModelProxy:
         return batch_scores
 
     def get_reward(self, data):
-        queries = data["queries"]
-        responses = data.get("responses", queries)  # 如果没有提供responses，使用queries
-        references = data.get("references", None)  # 可选的参考答案
+        sequences = data["sequences"]
+        references = data.get("references", None)
         
         if self.batch_size is None:
             batch_size = len(queries)
