@@ -170,7 +170,7 @@ class NaiveExperienceMaker(ABC):
         return {k: v.to(device) for k, v in batch.items()}
 
     @torch.no_grad()
-    def make_experience_list(self, all_prompts: Union[str, List[str], Tuple[List[str], List[str]]], **generate_kwargs) -> List[Experience]:
+    def make_experience_list(self, all_prompts: Union[str, List[str], List[Union[List[str], List[str]]]], **generate_kwargs) -> List[Experience]:
         """
         Make a list of experience with the micro_rollout_batch_size.
 
@@ -179,9 +179,15 @@ class NaiveExperienceMaker(ABC):
         After that, we will calculate the advantages and returns for each experience.
         """
         args = self.strategy.args
-        # Handle possible tuple input (prompts, references)
-        if isinstance(all_prompts, tuple):
-            all_prompts, references = all_prompts
+        
+        print(f"all_prompts: {len(all_prompts)}")                                                             
+        print(f"type of all_prompts: {type(all_prompts)}")                                               
+        print(f"type of first element: {type(all_prompts[0])}")
+        # breakpoint()
+
+        # 如果all_prompts里面的项也是list，则认为包含prompts和references
+        if isinstance(all_prompts, list) and isinstance(all_prompts[0], list):
+            all_prompts, references = all_prompts[0], all_prompts[1]
         else:
             references = None
             
@@ -310,11 +316,11 @@ class NaiveExperienceMaker(ABC):
         # rewards
         if self.remote_rm_url is not None:
             # remote RM
-            sequences = self.tokenizer.batch_decode(samples.sequences.cpu(), skip_special_tokens=False)
+            queries = self.tokenizer.batch_decode(samples.sequences.cpu(), skip_special_tokens=False)
             references = None
             if hasattr(samples, "references"):
                 references = samples.references
-            r = remote_rm_fn(self.remote_rm_url, sequences=sequences, references=references).to(device=action_log_probs.device)
+            r = remote_rm_fn(self.remote_rm_url, queries=queries, references=references).to(device=action_log_probs.device)
         else:
             # local RM
             r = self.reward_model(sequences, attention_mask)
@@ -571,8 +577,12 @@ class RemoteExperienceMaker(NaiveExperienceMaker):
                     offset += length
                 queries = self.tokenizer.batch_decode(sequences_list, skip_special_tokens=False)
 
+            references = None
+            if hasattr(samples, "references") and samples.references is not None:
+                references = samples.references
+
             for rm in self.remote_rm_url:
-                r = remote_rm_fn_ray.remote(rm, queries=queries)
+                r = remote_rm_fn_ray.remote(rm, queries=queries, references=references)
                 r_refs.append(r)
 
         # log probs

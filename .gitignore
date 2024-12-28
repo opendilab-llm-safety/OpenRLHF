@@ -150,3 +150,8 @@ core
 *test_scripts*
 */checkpoint/*
 .aider*
+
+*logs*
+*json
+*jsonl
+*wandb*

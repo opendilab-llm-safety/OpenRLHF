@@ -138,8 +138,11 @@ class ActorPPOTrainer(PPOTrainer):
         # avoid OOM
         torch.cuda.empty_cache()
         model = self.actor.model.module
+        print(f"======self.actor.model.module:\n{model}")
         count, num_params = 0, len(list(model.named_parameters()))
+        print("===DeepSpeed model parameters:")
         for name, param in model.named_parameters():
+            print(f"======name: {name}, param: {param}")
             count += 1  # empty_cache at last param
 
             # Fire all vllm engines for broadcast
@@ -283,6 +286,7 @@ class ActorModelRayActor(BasePPORole):
         self.prompts_dataset = PromptDataset(
             prompts_data, self.tokenizer, strategy, input_template=args.input_template
         )
+        print(f"========prompts_dataset type: {type(self.prompts_dataset)}")
         def collate_fn(batch):
             prompts = [item[0] if isinstance(item, tuple) else item for item in batch]
             references = [item[1] if isinstance(item, tuple) and len(item) > 1 else None for item in batch]

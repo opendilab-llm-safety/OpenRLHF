@@ -13,6 +13,11 @@ def request_api_wrapper(url, data, score_key="rewards", try_max_times=5):
     headers = {
         "Content-Type": "application/json",
     }
+    
+    # Ensure data has the required "queries" field
+    if "queries" not in data:
+        raise ValueError("Missing required field 'queries' in request data")
+            
     for _ in range(try_max_times):
         try:
             response = requests.post(url=url, json=data, headers=headers, timeout=180)
@@ -29,24 +34,32 @@ def request_api_wrapper(url, data, score_key="rewards", try_max_times=5):
     raise Exception(f"Request error for {try_max_times} times, returning None. Please check the API server.")
 
 
-def remote_rm_fn(api_url, queries, score_key="rewards"):
+def remote_rm_fn(api_url, queries, references=None, score_key="rewards"):
     """remote reward model API
-    api_url: RM API, We assume that the API supports two modes: merging query + response and not merging
-    queries: query+response with the template
-    design is made optional.
-    score_key: RM score key
+    Args:
+        api_url: RM API URL
+        queries: list of query strings to score
+        references: optional list of reference answers
+        score_key: key for the score in the response
+    Returns:
+        torch.Tensor: reward scores
     """
-    scores = request_api_wrapper(api_url, {"query": queries}, score_key)
+    data = {"queries": queries}
+    if references is not None:
+        data["references"] = references
+        
+    scores = request_api_wrapper(api_url, data, score_key)
     return torch.tensor(scores)
 
 
 @ray.remote
-def remote_rm_fn_ray(api_url, queries, score_key="rewards"):
-    return remote_rm_fn(api_url, queries, score_key)
+def remote_rm_fn_ray(api_url, queries, references=None, score_key="rewards"):
+    """Ray remote version of remote_rm_fn"""
+    return remote_rm_fn(api_url, queries, references, score_key)
 
 
 if __name__ == "__main__":
     # test utils
-    url = "http:xxx/get_rm_score"
-    score = remote_rm_fn(url, ["example query"], ["example response"])
+    url = "http:xxx/get_reward"
+    score = remote_rm_fn(url, queries=["example query"], references=["example response"])
     print(score)
