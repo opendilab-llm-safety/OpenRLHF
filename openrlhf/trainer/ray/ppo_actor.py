@@ -138,11 +138,11 @@ class ActorPPOTrainer(PPOTrainer):
         # avoid OOM
         torch.cuda.empty_cache()
         model = self.actor.model.module
-        print(f"======self.actor.model.module:\n{model}")
+        # print(f"======self.actor.model.module:\n{model}")
         count, num_params = 0, len(list(model.named_parameters()))
-        print("===DeepSpeed model parameters:")
+        # print("===DeepSpeed model parameters:")
         for name, param in model.named_parameters():
-            print(f"======name: {name}, param: {param}")
+            # print(f"======name: {name}, param: {param}")
             count += 1  # empty_cache at last param
 
             # Fire all vllm engines for broadcast

@@ -180,9 +180,10 @@ class NaiveExperienceMaker(ABC):
         """
         args = self.strategy.args
         
-        print(f"all_prompts: {len(all_prompts)}")                                                             
-        print(f"type of all_prompts: {type(all_prompts)}")                                               
+        print(f"type of all_prompts: {type(all_prompts)}") 
+        print(f"len of all_prompts: {len(all_prompts)}")                                                                                                                
         print(f"type of first element: {type(all_prompts[0])}")
+        print(f"len of first element: {len(all_prompts[0])}")
         # breakpoint()
 
         # 如果all_prompts里面的项也是list，则认为包含prompts和references
