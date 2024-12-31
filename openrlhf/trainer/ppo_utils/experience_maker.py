@@ -207,7 +207,10 @@ class NaiveExperienceMaker(ABC):
         experiences, rewards = self.process_experiences(experiences)
 
         # calculate return and advantages
+        index = 0
         for experience, reward in zip(experiences, rewards):
+            index += 1
+            print(f"experience {index}: {experience}")
             experience = experience.to_device("cuda")
             reward = reward.to(device="cuda")
             num_actions = experience.info["num_actions"]
