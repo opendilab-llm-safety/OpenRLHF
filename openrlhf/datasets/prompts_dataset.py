@@ -2,7 +2,9 @@ from torch.utils.data import Dataset
 from tqdm import tqdm
 
 
-def preprocess_data(data, input_template=None, input_key="input", apply_chat_template=None) -> str:
+from typing import Union, Tuple, Optional
+
+def preprocess_data(data, input_template=None, input_key="input", image_key=None, apply_chat_template=None) -> Union[str, Tuple[str, Optional[str]]]:
     if apply_chat_template:
         chat = data[input_key]
         if isinstance(chat, str):
@@ -12,7 +14,9 @@ def preprocess_data(data, input_template=None, input_key="input", apply_chat_tem
         prompt = data[input_key]
         if input_template:
             prompt = input_template.format(prompt)
-    return prompt
+    # Handle image path if provided
+    image_path = data.get(image_key) if image_key else None
+    return (prompt, image_path) if image_path else prompt
 
 
 class PromptDataset(Dataset):
@@ -31,6 +35,7 @@ class PromptDataset(Dataset):
         tokenizer,
         strategy,
         input_template=None,
+        image_key=None,  # New: Key for image paths in dataset
     ) -> None:
         super().__init__()
         self.strategy = strategy
@@ -45,11 +50,18 @@ class PromptDataset(Dataset):
             apply_chat_template = self.tokenizer.apply_chat_template
 
         self.prompts = []
+        self.images = []  # New: Store image paths
         self.references = []
         reference_key = getattr(self.strategy.args, "reference_key", "reference")
         for data in tqdm(dataset, desc="Preprocessing data", disable=not self.strategy.is_rank_0()):
-            prompt = preprocess_data(data, input_template, input_key, apply_chat_template)
-            self.prompts.append(prompt)
+            result = preprocess_data(data, input_template, input_key, image_key, apply_chat_template)
+            if isinstance(result, tuple):
+                prompt, image_path = result
+                self.prompts.append(prompt)
+                self.images.append(image_path)
+            else:
+                self.prompts.append(result)
+                self.images.append(None)
             self.references.append(data.get(reference_key, None))  # 读取reference
 
     def __len__(self):
@@ -58,7 +70,13 @@ class PromptDataset(Dataset):
 
     def __getitem__(self, idx):
         prompt = self.prompts[idx]
+        image = self.images[idx]
         reference = self.references[idx]
+        
         if reference is not None:
+            if image is not None:
+                return (prompt, reference, image)
             return (prompt, reference)
+        if image is not None:
+            return (prompt, image)
         return prompt

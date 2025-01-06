@@ -200,6 +200,7 @@ class ActorModelRayActor(BasePPORole):
             lora_dropout=strategy.args.lora_dropout,
             ds_config=strategy.get_ds_train_config(is_actor=True),
             packing_samples=strategy.args.packing_samples,
+            model_type=strategy.args.model_type,  # Pass model_type for multi-modal support
         )
         strategy.print(actor)
 
@@ -284,13 +285,24 @@ class ActorModelRayActor(BasePPORole):
         )
         prompts_data = prompts_data.select(range(min(args.max_samples, len(prompts_data))))
         self.prompts_dataset = PromptDataset(
-            prompts_data, self.tokenizer, strategy, input_template=args.input_template
+            prompts_data, 
+            self.tokenizer, 
+            strategy, 
+            input_template=args.input_template,
+            image_key=args.image_key  # Pass image_key for multi-modal datasets
         )
         print(f"========prompts_dataset type: {type(self.prompts_dataset)}")
         def collate_fn(batch):
+            # Extract prompts, references and images
             prompts = [item[0] if isinstance(item, tuple) else item for item in batch]
             references = [item[1] if isinstance(item, tuple) and len(item) > 1 else None for item in batch]
-            return prompts, references
+            images = [item[2] if isinstance(item, tuple) and len(item) > 2 else None for item in batch]
+            
+            if any(img is not None for img in images):
+                return prompts, references, images
+            elif any(ref is not None for ref in references):
+                return prompts, references
+            return prompts
             
         self.prompts_dataloader = strategy.setup_dataloader(
             self.prompts_dataset, args.rollout_batch_size // strategy.world_size, True, True, collate_fn=collate_fn

@@ -339,6 +339,13 @@ if __name__ == "__main__":
         "--apply_chat_template", action="store_true", default=False, help="Use HF tokenizer chat template"
     )
 
+    # Multi-modal settings
+    parser.add_argument("--model_type", type=str, default="causal_lm", 
+                       choices=["causal_lm", "qwen2_vl"],
+                       help="Type of model to use (causal_lm or qwen2_vl)")
+    parser.add_argument("--image_key", type=str, default=None,
+                       help="JSON dataset key for image paths in multi-modal training")
+
     # wandb parameters
     parser.add_argument("--use_wandb", type=str, default=None)
     parser.add_argument("--wandb_org", type=str, default=None)
@@ -392,5 +399,13 @@ if __name__ == "__main__":
             args.flash_attn = True
         assert args.vllm_num_engines > 0, "Only support `--packing_samples` with vLLM."
         assert not args.pretrain_data, "`--pretrain_data` is not supported with `--packing_samples` yet."
+
+    # Validate model type and image settings
+    if args.model_type == "qwen2_vl" and args.image_key is None:
+        print("[Warning] Using qwen2_vl model but no image_key specified. " 
+              "Multi-modal features will be disabled.")
+    elif args.model_type == "causal_lm" and args.image_key is not None:
+        print("[Warning] image_key specified but using causal_lm model. "
+              "Images will be ignored.")
 
     train(args)

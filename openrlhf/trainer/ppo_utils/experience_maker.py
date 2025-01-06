@@ -118,9 +118,7 @@ class Samples:
 
 
 class NaiveExperienceMaker(ABC):
-    """
-    Naive experience maker.
-    """
+    """Naive experience maker."""
 
     def __init__(
         self,
@@ -170,10 +168,10 @@ class NaiveExperienceMaker(ABC):
         return {k: v.to(device) for k, v in batch.items()}
 
     @torch.no_grad()
-    def make_experience_list(self, all_prompts: Union[str, List[str], List[Union[List[str], List[str]]]], **generate_kwargs) -> List[Experience]:
+    def make_experience_list(self, all_prompts: Union[str, List[str], Tuple[List[str], List[str], List[str]]], **generate_kwargs) -> List[Experience]:
         """
-        Make a list of experience with the micro_rollout_batch_size.
-
+        Make experiences from prompts and optionally images.
+        
         This method will first calculate the response sequences and rewards for the given prompts.
         Then, if we need certain processing for the rewards or do certain filtering, we can process the rollout as a whole.
         After that, we will calculate the advantages and returns for each experience.
@@ -184,16 +182,22 @@ class NaiveExperienceMaker(ABC):
         print(f"len of all_prompts: {len(all_prompts)}")                                                                                                                
         print(f"type of first element: {type(all_prompts[0])}")
         print(f"len of first element: {len(all_prompts[0])}")
-        # breakpoint()
-
-        # 如果all_prompts里面的项也是list，则认为包含prompts和references
-        if isinstance(all_prompts, list) and isinstance(all_prompts[0], list):
+        # breakpoint()        
+        
+        args = self.strategy.args
+        
+        # Handle prompts, references and images
+        if isinstance(all_prompts, list) and isinstance(all_prompts[0], list) and len(all_prompts) == 3:
+            all_prompts, references, images = all_prompts
+        elif isinstance(all_prompts, list) and isinstance(all_prompts[0], list) and len(all_prompts) == 2:
             all_prompts, references = all_prompts[0], all_prompts[1]
+            images = None 
         else:
             references = None
+            images = None
             
-        # generate responses
-        samples_list = self.generate_samples(all_prompts, references=references, **generate_kwargs)
+        # Generate responses with images for multi-modal models
+        samples_list = self.generate_samples(all_prompts, references=references, images=images, **generate_kwargs)
         torch.distributed.barrier()
 
         experiences = []
@@ -206,7 +210,7 @@ class NaiveExperienceMaker(ABC):
 
         experiences, rewards = self.process_experiences(experiences)
 
-        # calculate return and advantages
+        # Calculate return and advantages
         index = 0
         for experience, reward in zip(experiences, rewards):
             index += 1
@@ -239,9 +243,9 @@ class NaiveExperienceMaker(ABC):
                 )
                 experience.advantages = deepcopy(experience.returns)
             else:
-                raise Exception(f"Unkown advantage_estimator {self.advantage_estimator}")
+                raise Exception(f"Unknown advantage_estimator {self.advantage_estimator}")
 
-            # calculate the return info.
+            # Calculate return info
             if not getattr(self, "packing_samples", False):
                 return_sums = reward.sum(dim=-1)
             else:
@@ -249,31 +253,39 @@ class NaiveExperienceMaker(ABC):
                     [each_reward.sum() for each_reward in reward], device=torch.cuda.current_device()
                 )
             experience.info["return"] = return_sums
-            # remove unnecessary info
+            # Remove unnecessary info
             experience.kl = None
             del experience.info["num_actions"]
             experience.to_device("cpu")
         return experiences
 
     @torch.no_grad()
-    def generate_samples(self, all_prompts: List[str], references: Optional[List[str]] = None, **generate_kwargs) -> List[Samples]:
-        """
-        Generate samples and return in batches.
-        """
+    def generate_samples(self, all_prompts: List[str], references: Optional[List[str]] = None, images: Optional[List[str]] = None, **generate_kwargs) -> List[Samples]:
+        """Generate samples and return in batches."""
         assert not getattr(self, "packing_samples", False)
         args = self.strategy.args
         self.actor.eval()
-        # sample multiple response
+
+        # Sample multiple responses
         all_prompts = sum([[prompt] * args.n_samples_per_prompt for prompt in all_prompts], [])
         if references is not None:
             references = sum([[ref] * args.n_samples_per_prompt for ref in references], [])
+        if images is not None:
+            images = sum([[img] * args.n_samples_per_prompt for img in images], [])
             
         samples_list = []
         for i in range(0, len(all_prompts), args.micro_rollout_batch_size):
             prompts = all_prompts[i : i + args.micro_rollout_batch_size]
             batch_references = references[i : i + args.micro_rollout_batch_size] if references else None
+            batch_images = images[i : i + args.micro_rollout_batch_size] if images else None
             inputs = self.tokenize_fn(prompts, self.prompt_max_len, device="cuda")
-            sequences, attention_mask, action_mask = self.actor.generate(**inputs, **generate_kwargs)
+
+            # Handle images for multi-modal models
+            if batch_images is not None and hasattr(self.actor, "model_type") and self.actor.model_type == "qwen2_vl":
+                sequences, attention_mask, action_mask = self.actor.generate(**inputs, images=batch_images, **generate_kwargs)
+            else:
+                sequences, attention_mask, action_mask = self.actor.generate(**inputs, **generate_kwargs)
+
             samples = Samples(
                 sequences=sequences,
                 attention_mask=attention_mask,

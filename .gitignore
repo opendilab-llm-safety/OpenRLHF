@@ -155,3 +155,6 @@ core
 *json
 *jsonl
 *wandb*
+.auto-coder/
+actions/
+output.txt

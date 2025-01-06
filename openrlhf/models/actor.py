@@ -1,11 +1,12 @@
-from typing import Optional, Tuple, Union
+from typing import Optional, Tuple, Union, List
 
 import torch
 import torch.distributed as dist
 import torch.nn as nn
 from peft import LoraConfig, TaskType, get_peft_model
 from peft.tuners.lora import LoraLayer
-from transformers import AutoModelForCausalLM, BitsAndBytesConfig
+from transformers import AutoModelForCausalLM, AutoProcessor, BitsAndBytesConfig, Qwen2VLForConditionalGeneration
+from qwen_vl_utils import process_vision_info
 from transformers.integrations.deepspeed import HfDeepSpeedConfig
 
 from .ring_attn_utils import convert_ring_attn_params
@@ -45,6 +46,7 @@ class Actor(nn.Module):
         ds_config=None,
         device_map=None,
         packing_samples=False,
+        model_type="causal_lm",  # New: Specify model type
         **kwargs,
     ) -> None:
         super().__init__()
@@ -70,14 +72,31 @@ class Actor(nn.Module):
             else:
                 nf4_config = None
 
-            self.model = AutoModelForCausalLM.from_pretrained(
-                pretrain_or_model,
-                trust_remote_code=True,
-                attn_implementation=attn_implementation,
-                quantization_config=nf4_config,
-                torch_dtype=torch.bfloat16 if bf16 else "auto",
-                device_map=device_map,
-            )
+            if model_type == "causal_lm":
+                self.model = AutoModelForCausalLM.from_pretrained(
+                    pretrain_or_model,
+                    trust_remote_code=True,
+                    attn_implementation=attn_implementation,
+                    quantization_config=nf4_config,
+                    torch_dtype=torch.bfloat16 if bf16 else "auto",
+                    device_map=device_map,
+                )
+            elif model_type == "qwen2_vl":
+                self.model = Qwen2VLForConditionalGeneration.from_pretrained(
+                    pretrain_or_model,
+                    trust_remote_code=True,
+                    attn_implementation=attn_implementation,
+                    quantization_config=nf4_config,
+                    torch_dtype=torch.bfloat16 if bf16 else "auto",
+                    device_map=device_map,
+                )
+                # Initialize processor for vision
+                self.processor = AutoProcessor.from_pretrained(pretrain_or_model)
+            else:
+                raise ValueError(f"Unsupported model type: {model_type}")
+
+            # Store model type for later use
+            self.model_type = model_type
 
             # LoRA
             if lora_rank > 0:
@@ -188,6 +207,7 @@ class Actor(nn.Module):
         return_output=False,
         ring_attn_group: Optional[dist.ProcessGroup] = None,
         packed_seq_lens: Optional[list[int]] = None,
+        images: Optional[List[str]] = None,  # New: Support image inputs
     ) -> torch.Tensor:
         """Returns action log probs"""
         if not self.packing_samples:
@@ -205,7 +225,33 @@ class Actor(nn.Module):
             # explicitly ignore attention_mask for packing_samples
             attention_mask = None
 
-        output = self.model(sequences, attention_mask=attention_mask, position_ids=position_ids)
+        if self.model_type == "qwen2_vl" and images is not None:
+            # Process images for multi-modal input
+            messages = [{"role": "user", "content": []}]
+            for img_path in images:
+                messages[0]["content"].append({
+                    "type": "image",
+                    "image": img_path
+                })
+            messages[0]["content"].append({
+                "type": "text", 
+                "text": self.tokenizer.decode(sequences[0])
+            })
+            
+            # Process inputs
+            text = self.processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+            image_inputs, video_inputs = process_vision_info(messages)
+            inputs = self.processor(
+                text=[text],
+                images=image_inputs,
+                videos=video_inputs,
+                padding=True,
+                return_tensors="pt"
+            ).to(sequences.device)
+            
+            output = self.model(**inputs)
+        else:
+            output = self.model(sequences, attention_mask=attention_mask, position_ids=position_ids)
         # https://github.com/OpenRLHF/OpenRLHF/pull/634
         output["logits"] = output["logits"].to(torch.float32)
 
