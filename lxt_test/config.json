@@ -1,0 +1,10 @@
+{
+    "model_path": "/mnt/hwfile/llm-safety/models/huggingface/Qwen/Qwen2-VL-2B-Instruct",
+    "tensor_parallel_size": 1,
+    "base_prompt": "What is the content of this image?\n",
+    "test_images": [
+        "/mnt/hwfile/llm-safety/datasets/InfoVQA/images/10002.jpeg",
+        "/mnt/hwfile/llm-safety/datasets/InfoVQA/images/10003.jpeg",
+        "/mnt/hwfile/llm-safety/datasets/InfoVQA/images/10005.jpeg"
+    ]
+}
