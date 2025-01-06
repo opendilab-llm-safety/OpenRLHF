@@ -2,6 +2,7 @@
 
 # 1. 环境变量设置（在两个节点上执行）
 export OPENRLHF_PATH='/mnt/petrelfs/lixiangtian/workspace/OpenRLHF'
+export PYTHONPATH=$OPENRLHF_PATH:$PYTHONPATH
 export RAY_VERSION=2.12.0
 export RAY_PORT=30001  # 示例端口号，可根据实际情况调整
 export RAY_DASHBOARD_PORT=40001
@@ -13,7 +14,12 @@ echo "MASTER_NODE_IP: $MASTER_NODE_IP"
 # export MASTER_NODE_IP="10.140.0.134"  # 在工作节点上执行时取消注释并填入头节点IP
 
 export RAY_ADDRESS="http://${MASTER_NODE_IP}:$RAY_DASHBOARD_PORT"
-export PYTHONPATH=$OPENRLHF_PATH:$PYTHONPATH
+echo "RAY_ADDRESS: $RAY_ADDRESS"
+
+# 读取远程奖励模型url
+# RM_SERVICE_URL=http://10.140.1.175:20020/get_reward
+source rm_service_status.txt
+echo $RM_SERVICE_URL
 
 # 2. 激活conda环境（在两个节点上执行）
 source /mnt/petrelfs/lixiangtian/miniconda3/etc/profile.d/conda.sh
@@ -23,7 +29,7 @@ conda activate rlhf
 # 在头节点终端执行以下命令：
 ray stop --force
 ray start --head \
-    --node-ip-address=$(hostname -i) \
+    --node-ip-address=$MASTER_NODE_IP \
     --port=$RAY_PORT \
     --dashboard-host=0.0.0.0 \
     --dashboard-port=$RAY_DASHBOARD_PORT \
@@ -62,7 +68,7 @@ ray job submit --address=http://${MASTER_NODE_IP}:$RAY_DASHBOARD_PORT \
     --vllm_tensor_parallel_size 1 \
     --colocate_actor_ref \
     --pretrain /mnt/hwfile/llm-safety/models/huggingface/Qwen/Qwen2-VL-2B-Instruct \
-    --remote_rm_url http://10.140.1.98:20020/get_reward \
+    --remote_rm_url $RM_SERVICE_URL \
     --save_path /mnt/hwfile/llm-safety/checkpoints/Qwen2-VL-2B-Instruct-PPO-MetaMathQA \
     --input_key query \
     --reference_key response \
