@@ -7,14 +7,13 @@
 #SBATCH --job-name=serve_rewardmodel
 #SBATCH --quotatype=auto          
 #SBATCH -o serve_rm_logs/output.%j.log    
-#SBATCH -e serve_rm_logs/error.%j.log     
 
 # 获取节点IP
 NODE_IP=$(hostname -I | awk '{print $1}')
 VLLM_PORT=20010
 RM_SERVICE_PORT=20020
 STATUS_FILE="rm_service_status.txt"
-MODEL_PATH="/mnt/hwfile/llm-safety/models/huggingface/Qwen/Qwen2.5-72B-Instruct-AWQ"
+MODEL_PATH="/mnt/hwfile/llm-safety/models/huggingface/Qwen/Qwen2.5-14B-Instruct-AWQ"
 
 # 激活conda环境
 source /mnt/petrelfs/lixiangtian/miniconda3/etc/profile.d/conda.sh
@@ -26,7 +25,7 @@ vllm serve \
     $MODEL_PATH \
     --port $VLLM_PORT \
     --host 0.0.0.0 \
-    --served_model_name qwen &
+    --served_model_name qwen 2>&1 &
 
 # 等待vLLM服务启动
 echo "Waiting for vLLM service to start..."
@@ -46,7 +45,7 @@ python -m openrlhf.cli.serve_rm_vllm \
     --port $RM_SERVICE_PORT \
     --batch_size 128 \
     --num_processes 128 \
-    --max_len 2048 &
+    --max_len 2048 2>&1 &
 
 
 # 将服务信息写入状态文件

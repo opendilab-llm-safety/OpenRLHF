@@ -75,10 +75,10 @@ class Actor(nn.Module):
             if model_type == "causal_lm":
                 self.model = AutoModelForCausalLM.from_pretrained(
                     pretrain_or_model,
+                    torch_dtype=torch.bfloat16 if bf16 else "auto",
                     trust_remote_code=True,
                     attn_implementation=attn_implementation,
                     quantization_config=nf4_config,
-                    torch_dtype=torch.bfloat16 if bf16 else "auto",
                     device_map=device_map,
                 )
             elif model_type == "qwen2_vl":
@@ -226,30 +226,46 @@ class Actor(nn.Module):
             attention_mask = None
 
         if self.model_type == "qwen2_vl" and images is not None:
-            # Process images for multi-modal input
-            messages = [{"role": "user", "content": []}]
-            for img_path in images:
-                messages[0]["content"].append({
-                    "type": "image",
-                    "image": img_path
+            # Process images for multi-modal input in batch
+            batch_size = sequences.size(0)
+            batch_messages = []
+            
+            for i in range(batch_size):
+                message = {"role": "user", "content": []}
+                # Assume images is a list of lists, where each inner list contains images for one sequence
+                if i < len(images):
+                    for img_path in images[i]:
+                        message["content"].append({
+                            "type": "image",
+                            "image": img_path
+                        })
+                message["content"].append({
+                    "type": "text",
+                    "text": self.processor.decode(sequences[i])
                 })
-            messages[0]["content"].append({
-                "type": "text", 
-                "text": self.tokenizer.decode(sequences[0])
-            })
+                batch_messages.append(message)
             
-            # Process inputs
-            text = self.processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-            image_inputs, video_inputs = process_vision_info(messages)
-            inputs = self.processor(
-                text=[text],
-                images=image_inputs,
-                videos=video_inputs,
-                padding=True,
-                return_tensors="pt"
-            ).to(sequences.device)
+            # Process inputs for each sequence in batch
+            batch_inputs = []
+            for message in batch_messages:
+                text = self.processor.apply_chat_template([message], tokenize=False, add_generation_prompt=True)
+                image_inputs, video_inputs = process_vision_info([message])
+                inputs = self.processor(
+                    text=[text],
+                    images=image_inputs,
+                    videos=video_inputs,
+                    padding=True,
+                    return_tensors="pt"
+                ).to(sequences.device)
+                batch_inputs.append(inputs)
             
-            output = self.model(**inputs)
+            # Combine batch inputs
+            combined_inputs = {
+                key: torch.cat([inputs[key] for inputs in batch_inputs], dim=0)
+                for key in batch_inputs[0].keys()
+            }
+            
+            output = self.model(**combined_inputs)
         else:
             output = self.model(sequences, attention_mask=attention_mask, position_ids=position_ids)
         # https://github.com/OpenRLHF/OpenRLHF/pull/634

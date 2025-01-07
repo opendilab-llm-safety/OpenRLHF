@@ -69,8 +69,8 @@ ray job submit --address=http://${MASTER_NODE_IP}:$RAY_DASHBOARD_PORT \
     --colocate_actor_ref \
     --pretrain /mnt/hwfile/llm-safety/models/huggingface/Qwen/Qwen2-VL-2B-Instruct \
     --remote_rm_url $RM_SERVICE_URL \
-    --save_path /mnt/hwfile/llm-safety/checkpoints/Qwen2-VL-2B-Instruct-PPO-MetaMathQA \
-    --input_key query \
+    --save_path /mnt/hwfile/llm-safety/checkpoints/Qwen2-VL-2B-Instruct-PPO-MathV360K \
+    --input_key prompt \
     --reference_key response \
     --model_type qwen2_vl \
     --image_key image \
@@ -102,7 +102,7 @@ ray job submit --address=http://${MASTER_NODE_IP}:$RAY_DASHBOARD_PORT \
     --n_samples_per_prompt 1 \
     --advantage_estimator gae \
     --wandb_project ppo-training \
-    --wandb_run_name Qwen2-VL-2B-Instruct-PPO-MetaMathQA \
+    --wandb_run_name Qwen2-VL-2B-Instruct-PPO-MathV360K \
     --use_wandb ${WANDB_API_KEY}
 
 # 6. 训练完成后停止Ray服务（在两个节点上执行）

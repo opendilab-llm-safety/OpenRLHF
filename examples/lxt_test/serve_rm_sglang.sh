@@ -8,7 +8,6 @@
 #SBATCH --job-name=serve_rewardmodel
 #SBATCH --quotatype=auto          
 #SBATCH -o serve_rm_logs/output.%j.log    
-#SBATCH -e serve_rm_logs/error.%j.log     
 
 # 获取节点IP
 NODE_IP=$(hostname -I | awk '{print $1}')
@@ -47,9 +46,9 @@ conda activate sglang || {
 # 启动基础模型服务
 echo "Starting base model service on ${NODE_IP}:${RM_MODEL_PORT}..."
 python -m sglang.launch_server \
-    --model-path /mnt/hwfile/llm-safety/models/huggingface/Qwen/Qwen2.5-72B-Instruct-AWQ \
+    --model-path /mnt/hwfile/llm-safety/models/huggingface/Qwen/Qwen2.5-14B-Instruct-AWQ \
     --host 0.0.0.0 \
-    --port $RM_MODEL_PORT &
+    --port $RM_MODEL_PORT 2>&1 &
 
 sleep 100
 # 等待基础模型服务完全启动（最多等待30次，每次10秒）
@@ -65,7 +64,7 @@ python -m openrlhf.cli.serve_rm_lxt \
     --port $RM_SERVICE_PORT \
     --model_endpoint http://127.0.0.1:$RM_MODEL_PORT \
     --batch_size 16 \
-    --max_len 32768 &
+    --max_len 32768 2>&1 &
 
 sleep 5
 
