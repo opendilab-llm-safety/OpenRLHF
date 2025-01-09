@@ -198,26 +198,53 @@ class ActorModelRayActor(BasePPORole):
 
         self._setup_distributed(strategy)
 
-        actor = Actor(
-            pretrain,
-            use_flash_attention_2=strategy.args.flash_attn,
-            bf16=strategy.args.bf16,
-            load_in_4bit=strategy.args.load_in_4bit,
-            lora_rank=strategy.args.lora_rank,
-            lora_alpha=strategy.args.lora_alpha,
-            target_modules=strategy.args.target_modules,
-            lora_dropout=strategy.args.lora_dropout,
-            ds_config=strategy.get_ds_train_config(is_actor=True),
-            packing_samples=strategy.args.packing_samples,
-            model_type=strategy.args.model_type,  # Pass model_type for multi-modal support
-        )
-        self.model_type = strategy.args.model_type  # Store model_type as instance variable
+        # Initialize actor based on model type
+        if args.model_type in ["qwen2_vl", "vision_lm"]:
+            # Import vision-specific components
+            from openrlhf.utils import get_tokenizer_processor_vl
+            
+            actor = ActorVL(
+                pretrain,
+                use_flash_attention_2=strategy.args.flash_attn,
+                bf16=strategy.args.bf16,
+                load_in_4bit=strategy.args.load_in_4bit,
+                lora_rank=strategy.args.lora_rank,
+                lora_alpha=strategy.args.lora_alpha,
+                target_modules=strategy.args.target_modules,
+                lora_dropout=strategy.args.lora_dropout,
+                ds_config=strategy.get_ds_train_config(is_actor=True),
+                packing_samples=strategy.args.packing_samples,
+            )
+            strategy.print("Initialized Vision-Language Actor Model")
+            
+            # Configure tokenizer and processor for vision models
+            self.tokenizer, self.processor = get_tokenizer_processor_vl(
+                pretrain, actor.model, "left", strategy, use_fast=not strategy.args.disable_fast_tokenizer
+            )
+        else:
+            actor = Actor(
+                pretrain,
+                use_flash_attention_2=strategy.args.flash_attn,
+                bf16=strategy.args.bf16,
+                load_in_4bit=strategy.args.load_in_4bit,
+                lora_rank=strategy.args.lora_rank,
+                lora_alpha=strategy.args.lora_alpha,
+                target_modules=strategy.args.target_modules,
+                lora_dropout=strategy.args.lora_dropout,
+                ds_config=strategy.get_ds_train_config(is_actor=True),
+                packing_samples=strategy.args.packing_samples,
+            )
+            strategy.print("Initialized Standard Actor Model")
+            
+            # Configure tokenizer for text-only models
+            self.tokenizer = get_tokenizer(
+                pretrain, actor.model, "left", strategy, use_fast=not strategy.args.disable_fast_tokenizer
+            )
+            self.processor = None
+            
+        self.model_type = args.model_type
+        strategy.print(f"Model Type: {self.model_type}")
         strategy.print(actor)
-
-        # configure tokenizer
-        self.tokenizer = get_tokenizer(
-            pretrain, actor.model, "left", strategy, use_fast=not strategy.args.disable_fast_tokenizer
-        )
 
         if args.enable_ema:
             ema_model = Actor(
@@ -280,10 +307,14 @@ class ActorModelRayActor(BasePPORole):
             strategy.print(f"Loaded the checkpoint: {ckpt_path}, consumed_samples: {self.consumed_samples}")
 
     def prepare_datasets(self):
+        """Prepare datasets for training, with support for both text-only and vision-language data."""
         strategy = self.strategy
         args = self.strategy.args
 
-        # prepare datasets
+        print("\n=== Preparing Datasets ===")
+        print(f"Model type: {self.model_type}")
+        
+        # Prepare prompts dataset
         prompts_data = blending_datasets(
             args.prompt_data,
             args.prompt_data_probs,
@@ -294,28 +325,51 @@ class ActorModelRayActor(BasePPORole):
             train_split=args.prompt_split,
         )
         prompts_data = prompts_data.select(range(min(args.max_samples, len(prompts_data))))
-        self.prompts_dataset = PromptDataset(
-            prompts_data, 
-            self.tokenizer, 
-            strategy, 
-            input_template=args.input_template,
-            image_key=args.image_key  # Pass image_key for multi-modal datasets
-        )
-        print(f"========prompts_dataset type: {type(self.prompts_dataset)}")
-        def collate_fn(batch):
-            # Extract prompts, references and images
-            prompts = [item[0] if isinstance(item, tuple) else item for item in batch]
-            references = [item[1] if isinstance(item, tuple) and len(item) > 1 else None for item in batch]
-            images = [item[2] if isinstance(item, tuple) and len(item) > 2 else None for item in batch]
+        
+        # Initialize dataset based on model type
+        if self.model_type in ["qwen2_vl", "vision_lm"]:
+            from openrlhf.datasets import PromptDatasetVL
             
-            if any(img is not None for img in images):
-                return prompts, references, images
-            elif any(ref is not None for ref in references):
-                return prompts, references
-            return prompts
+            print("\nInitializing Vision-Language Dataset")
+            vision_kwargs = {
+                "processor": self.processor,
+                "image_key": getattr(args, "image_key", "image"),
+                "text_key": getattr(args, "text_key", "text"),
+                "ref_key": getattr(args, "ref_key", "reference"),
+                "max_num_images": getattr(args, "max_num_images", 1),
+                "image_token_len": getattr(args, "image_token_len", 256),
+                "enforce_image_size": getattr(args, "enforce_image_size", True),
+            }
+            print("Vision settings:")
+            for k, v in vision_kwargs.items():
+                print(f"- {k}: {v}")
+                
+            self.prompts_dataset = PromptDatasetVL(
+                prompts_data,
+                self.tokenizer,
+                self.processor,
+                args.prompt_max_len,
+                strategy,
+                input_template=args.input_template,
+                **vision_kwargs
+            )
+        else:
+            print("\nInitializing Standard Text Dataset")
+            self.prompts_dataset = PromptDataset(
+                prompts_data,
+                self.tokenizer,
+                args.prompt_max_len,
+                strategy,
+                input_template=args.input_template
+            )
             
+        # Setup dataloader
         self.prompts_dataloader = strategy.setup_dataloader(
-            self.prompts_dataset, args.rollout_batch_size // strategy.world_size, True, True, collate_fn=collate_fn
+            self.prompts_dataset,
+            args.rollout_batch_size // strategy.world_size,
+            True,
+            True,
+            self.prompts_dataset.collate_fn
         )
 
         if args.pretrain_data:

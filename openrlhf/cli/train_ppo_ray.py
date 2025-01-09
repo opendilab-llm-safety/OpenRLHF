@@ -341,12 +341,27 @@ if __name__ == "__main__":
 
     # Multi-modal settings
     parser.add_argument("--model_type", type=str, default="causal_lm", 
-                       choices=["causal_lm", "qwen2_vl"],
-                       help="Type of model to use (causal_lm or qwen2_vl)")
+                       choices=["causal_lm", "qwen2_vl", "vision_lm"],
+                       help="Type of model to use (causal_lm, qwen2_vl, or vision_lm)")
     parser.add_argument("--image_key", type=str, default=None,
                        help="JSON dataset key for image paths in multi-modal training")
+    parser.add_argument("--vision_tower", type=str, default=None,
+                       help="Vision tower model name/path for vision-language models")
+    parser.add_argument("--image_aspect_ratio", type=str, default="pad",
+                       choices=["pad", "crop", "square"],
+                       help="Image preprocessing style")
+    parser.add_argument("--image_grid_pinpoints", action="store_true", default=False,
+                       help="Enable image grid pinpoints for region-based tasks")
+                       
+    # Performance tuning for vision models
+    parser.add_argument("--vision_batch_size", type=int, default=None,
+                       help="Separate batch size for vision processing")
+    parser.add_argument("--vision_offload", action="store_true", default=False,
+                       help="Offload vision features to CPU to save GPU memory")
+    parser.add_argument("--cache_vision_features", action="store_true", default=False,
+                       help="Cache processed vision features")
 
-    # wandb parameters
+    # wandb parameters 
     parser.add_argument("--use_wandb", type=str, default=None)
     parser.add_argument("--wandb_org", type=str, default=None)
     parser.add_argument("--wandb_group", type=str, default=None)

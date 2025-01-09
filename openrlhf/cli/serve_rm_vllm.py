@@ -69,9 +69,17 @@ class RewardModelProxy:
             api_key="dummy"
         )
 
-    def _process_single(self, query_ref_tuple):
-        """单个样本的处理函数"""
-        query, reference, index = query_ref_tuple
+    def _process_single(self, sample_tuple):
+        """处理单个样本
+        
+        Args:
+            sample_tuple: 包含(query, reference, vision_data, index)的元组
+            - query: 对话文本
+            - reference: 可选的参考答案
+            - vision_data: 可选的图像数据
+            - index: 样本索引
+        """
+        query, reference, vision_data, index = sample_tuple
         client = self._create_client()
         
         # 直接用正则表达式匹配对话内容
@@ -84,12 +92,26 @@ class RewardModelProxy:
             dialog[role] = content.strip()
         
         # 构建评估文本
-        eval_text = f"""你是一个专业的对话评估专家，你非常擅长评价assistant是否遵循了user的指令并做出了正确的回复。
-你将会收到一个user和assistant的对话，包括user的指令、assistant的回答，和参考答案。请根据以下维度评估assistant的回答是否遵循了user的指令并做出了正确的回复，最后给出简要分析和你的打分：
-1. 回答的准确性和相关性
-2. 回答的完整性
-3. 最终答案的格式正确性
-4. 语言表达的清晰度
+        eval_text = f"""你是一个专业的对话评估专家，你非常擅长评价assistant是否正确回答了问题。
+对于涉及图像的问题，你会特别关注assistant的回答是否准确描述了图像内容。
+你将会收到一个user和assistant的对话，可能包含:
+1. user的问题/指令
+2. assistant的回答
+3. 参考答案(如果有)
+4. 图像相关的问题(如果涉及图像)
+
+请根据以下维度进行评估:
+1. 回答的准确性和相关性:
+   - 文本回答是否准确回应了问题
+   - 对于图像问题，是否准确描述了图像内容
+2. 回答的完整性:
+   - 是否完整回答了所有问题点
+   - 对于复杂问题是否有充分解释
+3. 与参考答案的一致性(如果有):
+   - 回答是否与参考答案在关键信息上一致
+4. 语言表达:
+   - 表述是否清晰专业
+   - 结构是否合理
 
 你的输出必须是一个JSON对象，包含以下字段：
 {{
@@ -137,12 +159,13 @@ class RewardModelProxy:
             logger.error(f"Error in evaluation: {e}")
             return index, 0.0
 
-    def _process_batch(self, queries, references=None):
+    def _process_batch(self, queries, references=None, vision_data=None):
         # 准备数据
         data = []
         for i, query in enumerate(queries):
-            reference = references[i] if references is not None else None
-            data.append((query, reference, i))
+            ref = references[i] if references is not None else None
+            vis = vision_data[i] if vision_data is not None else None
+            data.append((query, ref, vis, i))
         
         # 为每个批次创建新的进程池
         with Pool(self.num_processes) as pool:
@@ -155,8 +178,17 @@ class RewardModelProxy:
             return [score for _, score in sorted_results]
 
     def get_reward(self, data):
+        """处理奖励计算请求
+        
+        Args:
+            data: 包含以下字段的字典:
+                - queries: 必需，对话文本列表
+                - references: 可选，参考答案列表
+                - vision_data: 可选，图像数据列表
+        """
         queries = data["queries"]
         references = data.get("references", None)
+        vision_data = data.get("vision_data", None)
         
         if self.batch_size is None:
             batch_size = len(queries)
@@ -178,7 +210,10 @@ class RewardModelProxy:
             batch_references = None
             if references is not None:
                 batch_references = references[i:min(len(references), i + batch_size)]
-            batch_scores = self._process_batch(batch_queries, batch_references)
+            batch_vision = None
+            if vision_data is not None:
+                batch_vision = vision_data[i:min(len(vision_data), i + batch_size)]
+            batch_scores = self._process_batch(batch_queries, batch_references, batch_vision)
             scores.extend(batch_scores)
             
         return scores
@@ -223,7 +258,7 @@ def create_app(args):
         
     return app
 
-def test_service(host: str, port: int, max_retries: int = 5, retry_interval: float = 2.0) -> Optional[bool]:
+def test_service(host: str, port: int, max_retries: int = 5, retry_interval: float = 2.0, test_vision: bool = False) -> Optional[bool]:
     """
     测试reward model服务是否正常运行
     
@@ -236,10 +271,18 @@ def test_service(host: str, port: int, max_retries: int = 5, retry_interval: flo
     Returns:
         bool: 服务是否正常运行
     """
+    # 基本文本测试
     test_data = {
-        "queries": ["1+2=?"],
-        "references": ["这是一个测试参考答案"],
+        "queries": ["描述这张图片。"],
+        "references": ["这是一张测试图片。"]
     }
+    
+    # 如果需要测试vision功能
+    if test_vision:
+        test_data["vision_data"] = [{
+            "pixel_values": [0.0] * 100,  # Dummy image data
+            "image_grid_thw": [1, 1, 1]
+        }]
     
     url = f"http://{host}:{port}/get_reward"
     
@@ -282,8 +325,11 @@ if __name__ == "__main__":
                       help="Batch size for processing requests")
     
     # 添加自测试相关参数
+    # 测试相关参数
     parser.add_argument("--skip-test", action="store_true",
-                      help="Skip the service self-test")
+                      help="跳过服务自测")
+    parser.add_argument("--test-vision", action="store_true", 
+                      help="测试多模态功能")
     parser.add_argument("--test-retries", type=int, default=5,
                       help="Number of retries for service self-test")
     parser.add_argument("--test-interval", type=float, default=2.0,
@@ -312,7 +358,7 @@ if __name__ == "__main__":
     if not args.skip_test:
         logger.info("Starting service self-test...")
         time.sleep(2)  # 等待服务完全启动
-        if test_service(args.host, args.port, args.test_retries, args.test_interval):
+        if test_service(args.host, args.port, args.test_retries, args.test_interval, args.test_vision):
             logger.info("Service is running and responding correctly")
         else:
             logger.error("Service self-test failed, but continuing to run...")

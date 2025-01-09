@@ -1,7 +1,7 @@
 import time
 from abc import ABC
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, field, InitVar, make_dataclass
 from typing import List, Optional, Tuple, Union
 
 import ray
@@ -31,91 +31,156 @@ def pin_memory(tensor: Union[torch.Tensor, list[torch.Tensor]]):
 
 @dataclass
 class Experience:
-    """Experience is a batch of data.
-    These data should have the the sequence length and number of actions.
-    Left padding for sequences is applied.
-
-    Shapes of each tensor:
-    sequences: (B, S)
-    action_log_probs: (B, A)
-    values: (B, A)
-    returns: (B, A)
-    advantages: (B, A)
-    attention_mask: (B, S)
-    action_mask: (B, A)
-    kl: (B, A)
-
-    "A" is the number of actions.
+    """Experience is a batch of data with sequence length and number of actions.
+    Left padding is applied to sequences.
+    
+    All tensors have shape (batch_size, ...) unless specified otherwise.
+    Prefixes indicate expected order of arguments.
+    
+    Basic fields (required):
+    1. sequences: (B, S) - Input tokens
+    2. action_log_probs: (B, A) - Action log probabilities
+    3. values: (B, A) - Value estimates 
+    4. attention_mask: (B, S) - Attention mask
+    5. action_mask: (B, A) - Action mask
+    6. info: Additional metadata
+    7. response_length: (B,) - Response lengths
+    8. total_length: (B,) - Total sequence lengths
+    
+    Optional fields:
+    - returns: (B, A) - Returns
+    - advantages: (B, A) - Advantages
+    - kl: (B, A) - KL divergence
+    - pixel_values: (B*h, w) - Image pixels
+    - image_grid_thws: (B, 3) - Image grid info
+    
+    B = batch, S = sequence len, A = action len, h/w = image dims
     """
+    # Required fields with explicit field definition
+    sequences: torch.Tensor = field(default=None)
+    action_log_probs: torch.Tensor = field(default=None)
+    values: torch.Tensor = field(default=None)
+    attention_mask: torch.LongTensor = field(default=None)
+    action_mask: torch.BoolTensor = field(default=None)
+    info: dict = field(default_factory=dict)
+    response_length: torch.Tensor = field(default=None)
+    total_length: torch.Tensor = field(default=None)
+    
+    # Optional fields 
+    returns: Optional[torch.Tensor] = field(default=None, compare=False)
+    advantages: Optional[torch.Tensor] = field(default=None, compare=False)
+    kl: Optional[torch.Tensor] = field(default=None, compare=False)
+    pixel_values: Optional[torch.Tensor] = field(default=None, compare=False)
+    image_grid_thws: Optional[torch.Tensor] = field(default=None, compare=False)
 
-    sequences: torch.Tensor
-    action_log_probs: torch.Tensor
-    values: torch.Tensor
-    returns: Optional[torch.Tensor]
-    advantages: Optional[torch.Tensor]
-    attention_mask: Optional[torch.LongTensor]
-    action_mask: Optional[torch.BoolTensor]
-    info: Optional[dict]
-    kl: Optional[torch.Tensor] = None
+    def __post_init__(self):
+        """Validate required fields after initialization."""
+        required_fields = [
+            'sequences', 'action_log_probs', 'values', 
+            'attention_mask', 'action_mask', 'info',
+            'response_length', 'total_length'
+        ]
+        for field_name in required_fields:
+            if getattr(self, field_name) is None:
+                raise ValueError(f"Required field '{field_name}' cannot be None")
 
     @torch.no_grad()
     def to_device(self, device: torch.device):
-        self.sequences = to(self.sequences, device)
-        self.action_log_probs = to(self.action_log_probs, device)
-        self.returns = to(self.returns, device)
-        self.advantages = to(self.advantages, device)
-        self.values = to(self.values, device)
-        self.attention_mask = to(self.attention_mask, device)
-        self.action_mask = to(self.action_mask, device)
-        self.kl = to(self.kl, device)
-        self.info = {key: to(value, device) for key, value in self.info.items()}
-        return self
+        """Move all tensors to specified device."""
+        # Create a dict with updated values since the dataclass is frozen
+        updates = {}
+        
+        # Move required fields
+        updates["sequences"] = to(self.sequences, device)
+        updates["action_log_probs"] = to(self.action_log_probs, device)
+        updates["values"] = to(self.values, device)
+        updates["attention_mask"] = to(self.attention_mask, device)
+        updates["action_mask"] = to(self.action_mask, device)
+        updates["info"] = {key: to(value, device) for key, value in self.info.items()} if self.info else {}
+        updates["response_length"] = to(self.response_length, device)
+        updates["total_length"] = to(self.total_length, device)
+        
+        # Move optional fields
+        updates["returns"] = to(self.returns, device)
+        updates["advantages"] = to(self.advantages, device)
+        updates["kl"] = to(self.kl, device)
+        
+        # Handle vision data if present
+        if self.pixel_values is not None:
+            updates["pixel_values"] = to(self.pixel_values, device)
+            updates["image_grid_thws"] = to(self.image_grid_thws, device)
+        
+        # Create new instance with updated values
+        return Experience(**updates)
 
     def pin_memory(self):
-        self.sequences = pin_memory(self.sequences)
-        self.action_log_probs = pin_memory(self.action_log_probs)
-        self.returns = pin_memory(self.returns)
-        self.advantages = pin_memory(self.advantages)
-        self.values = pin_memory(self.values)
-        self.attention_mask = pin_memory(self.attention_mask)
-        self.action_mask = pin_memory(self.action_mask)
-        self.kl = pin_memory(self.kl)
-        self.info = {key: pin_memory(value) for key, value in self.info.items()}
-        return self
+        """Pin memory for faster data transfer."""
+        # Create a dict with updated values since the dataclass is frozen
+        updates = {}
+        
+        # Pin required fields
+        updates["sequences"] = pin_memory(self.sequences)
+        updates["action_log_probs"] = pin_memory(self.action_log_probs)
+        updates["values"] = pin_memory(self.values)
+        updates["attention_mask"] = pin_memory(self.attention_mask)
+        updates["action_mask"] = pin_memory(self.action_mask)
+        updates["info"] = {key: pin_memory(value) for key, value in self.info.items()} if self.info else {}
+        updates["response_length"] = pin_memory(self.response_length)
+        updates["total_length"] = pin_memory(self.total_length)
+        
+        # Pin optional fields
+        updates["returns"] = pin_memory(self.returns)
+        updates["advantages"] = pin_memory(self.advantages)
+        updates["kl"] = pin_memory(self.kl)
+        
+        # Handle vision data if present
+        if self.pixel_values is not None:
+            updates["pixel_values"] = pin_memory(self.pixel_values)
+            updates["image_grid_thws"] = pin_memory(self.image_grid_thws)
+        
+        # Create new instance with updated values
+        return Experience(**updates)
 
 
-@dataclass
+@dataclass(frozen=True, order=False)
 class Samples:
-    """Samples is a batch of data.
-    There can be 2 formats to store the samples, batched or packed.
-    The batched format means padding is applied to the sequences, while the packed format
-    will concatenate the prompt and response without padding.
-
-    Shapes of each tensor, when 2 shapes are shown, the first one is for batched format
-        and the second one is for packed format:
-    sequences: (B, S) or (1, total_length), the tokens of both prompt and response.
-    attention_mask: (B, S) or (1, total_length), the attention mask for sequences.
-    action_mask: (B, A) or None, the action (response) mask to show which part of the
-        sequence is the response. When the samples are packed, this is None.
-    num_actions: int or (B,), the number of actions (tokens) in the response.
-        When the samples are not packed, we will use action_mask, so this is an int to
-        show the size of action_mask. Otherwise, this is a tensor to show the number of
-        actions for each sample.
-    packed_seq_lens: None or (B,), the length of each sample in the packed samples.
-    response_length: (B,), the number of tokens in the response.
-    total_length: (B,), the total number of tokens in the sequences.
-    references: Optional[List[str]], the reference answers for each sample.
+    """Samples batch supporting both text-only and multi-modal data.
+    
+    All tensors have shape (batch_size, ...) unless specified otherwise.
+    Two formats supported: batched (with padding) or packed (concatenated).
+    
+    Required fields:
+    1. sequences: (B,S)/(1,L) - Token sequences
+    2. num_actions: int/(B,) - Response token counts
+    3. response_length: (B,) - Response lengths per sample
+    4. total_length: (B,) - Total sequence lengths 
+    
+    Optional fields (based on format and modality):
+    - attention_mask: (B,S)/(1,L) - Attention masks
+    - action_mask: (B,A)/None - Response masks
+    - packed_seq_lens: None/(B,) - Individual lengths when packed
+    - pixel_values: (B*h,w) - Image pixels for vision
+    - image_grid_thws: (B,3) - Image grid dimensions
+    - references: List[str] - Reference answers
+    - images: List[str/Tensor] - Source images
+    
+    B = batch size, S = sequence len, A = action len
+    L = total len, h/w = image dimensions
     """
-
+    # Required fields must be listed first
     sequences: torch.Tensor
-    attention_mask: Optional[torch.LongTensor]
-    action_mask: Optional[torch.BoolTensor]
     num_actions: Union[int, torch.Tensor]
-    packed_seq_lens: Optional[torch.Tensor]
     response_length: torch.Tensor
     total_length: torch.Tensor
+    
+    # Optional fields with defaults after required fields
+    attention_mask: Optional[torch.LongTensor] = None
+    action_mask: Optional[torch.BoolTensor] = None
+    packed_seq_lens: Optional[torch.Tensor] = None
+    pixel_values: Optional[torch.Tensor] = None  
+    image_grid_thws: Optional[torch.Tensor] = None
     references: Optional[List[str]] = None
-    images: Optional[List[str]] = None
+    images: Optional[List[Union[str, torch.Tensor]]] = None
 
 
 class NaiveExperienceMaker(ABC):
@@ -128,8 +193,9 @@ class NaiveExperienceMaker(ABC):
         reward_model: nn.Module,
         initial_model: Actor,
         tokenizer,
+        processor=None,
         prompt_max_len: int,
-        kl_controller,
+        kl_controller=None,
         strategy=None,
         remote_rm_url: str = None,
         reward_fn=None,
@@ -150,11 +216,11 @@ class NaiveExperienceMaker(ABC):
 
     # tokenizer
     def tokenize_fn(self, texts, max_length, padding=True, device=None):
+        """Process text inputs using tokenizer."""
         if not padding:
-            # when padding is False, return tokenized texts as list
+            # When padding is False, return tokenized texts as list
             return self.tokenizer(
                 texts,
-    # Rest of the class implementation remains unchanged...
                 max_length=max_length,
                 truncation=True,
             )
@@ -168,8 +234,41 @@ class NaiveExperienceMaker(ABC):
         )
         return {k: v.to(device) for k, v in batch.items()}
 
+    def processor_fn(self, texts, images=None, max_length=None, padding=True, device=None):
+        """Process text and image inputs using processor if available.
+        Falls back to tokenizer if no processor exists or no images provided."""
+        if not hasattr(self, 'processor') or self.processor is None or images is None:
+            return self.tokenize_fn(texts, max_length, padding, device)
+            
+        if not padding:
+            # When padding is False, return processed inputs as list
+            return self.processor(
+                text=texts,
+                images=images,
+                max_length=max_length, 
+                truncation=True,
+                return_tensors=None
+            )
+
+        batch = self.processor(
+            text=texts,
+            images=images,
+            return_tensors="pt",
+            max_length=max_length,
+            padding=True,
+            truncation=True
+        )
+        
+        # Filter non-tensor values before device placement
+        return {k: v.to(device) if isinstance(v, torch.Tensor) else v 
+               for k, v in batch.items()}
+
     @torch.no_grad()
-    def make_experience_list(self, all_prompts: Union[str, List[str], Tuple[List[str], List[str], List[str]]], **generate_kwargs) -> List[Experience]:
+    def make_experience_list(
+        self, 
+        all_prompts: Union[str, List[str], Tuple[List[str], List[str], List[str]]], 
+        **generate_kwargs
+    ) -> List[Experience]:
         """
         Make experiences from prompts and optionally images.
         
@@ -373,15 +472,20 @@ class NaiveExperienceMaker(ABC):
             sequences, attention_mask, action_mask = self.actor.generate(**inputs, images=batch_images, **generate_kwargs)
 
             samples = Samples(
+                # Basic required fields
                 sequences=sequences,
-                attention_mask=attention_mask,
-                action_mask=action_mask,
                 num_actions=action_mask.size(1),
-                packed_seq_lens=None,
                 response_length=action_mask.float().sum(dim=-1),
                 total_length=attention_mask.float().sum(dim=-1),
+                
+                # Optional fields
+                attention_mask=attention_mask,
+                action_mask=action_mask,
+                packed_seq_lens=None,
+                
+                # Additional metadata
                 references=batch_references,
-                images=batch_images,
+                images=batch_images
             )
             samples_list.append(samples)
         return samples_list
@@ -398,68 +502,111 @@ class NaiveExperienceMaker(ABC):
         if self.critic is not None:
             self.critic.eval()
 
-        print(f"===========samples: {samples}")
-        # extract values from samples
+        if self.strategy.args.perf:
+            print("\n=== Make Experience Performance Stats ===")
+            print(f"Processing sample with shape: {samples.sequences.shape}")
+
+        # Extract all values from samples
         sequences = samples.sequences
         attention_mask = samples.attention_mask
         action_mask = samples.action_mask
         num_actions = samples.num_actions
+        pixel_values = samples.pixel_values
+        image_grid_thws = samples.image_grid_thws
 
-        # Get images from samples if available
-        images = samples.images if hasattr(samples, "images") else None
+        # Handle vision data type conversion if needed
+        vision_inputs = {}
+        if pixel_values is not None:
+            vision_inputs.update({
+                "pixel_values": pixel_values,
+                "image_grid_thw": image_grid_thws
+            })
+            print("\n=== Vision Inputs ===")
+            print(f"pixel_values shape: {pixel_values.shape}")
+            print(f"image_grid_thws shape: {image_grid_thws.shape}")
+            print(f"num_actions: {num_actions}")
 
-        # log probs
+        # Get action log probs
         print("\n=== Actor Forward ===")
-        print(f"sequences: {sequences.shape}")
-        print(f"num_actions: {num_actions}")
-        print(f"attention_mask: {attention_mask.shape}")
-        print(f"images: {images.shape if images is not None else 'None'}")
-        action_log_probs = self.actor(sequences, num_actions, attention_mask, images=images)
-        print(f"action_log_probs: {action_log_probs.shape}")
-        
+        action_log_probs = self.actor(
+            sequences=sequences,
+            num_actions=num_actions,
+            attention_mask=attention_mask,
+            **vision_inputs
+        )
+        print(f"action_log_probs shape: {action_log_probs.shape}")
 
-        # init log probs
+        # Get initial model log probs 
         print("\n=== Initial Model Forward ===")
-        print(f"sequences: {sequences.shape}")
-        print(f"num_actions: {num_actions}")
-        print(f"attention_mask: {attention_mask.shape}")
-        print(f"images: {images.shape if images is not None else 'None'}")
-        base_action_log_probs = self.initial_model(sequences, num_actions, attention_mask, images=images)
-        print(f"base_action_log_probs: {base_action_log_probs.shape}")
+        base_action_log_probs = self.initial_model(
+            sequences=sequences,
+            num_actions=num_actions,
+            attention_mask=attention_mask,
+            **vision_inputs
+        )
+        print(f"base_action_log_probs shape: {base_action_log_probs.shape}")
 
-        # values
+        # Get values
         if self.critic is not None:
-            value = self.critic(sequences, num_actions, attention_mask, images=images)
+            print("\n=== Critic Forward ===")
+            value = self.critic(
+                sequences=sequences,
+                num_actions=num_actions,
+                attention_mask=attention_mask,
+                **vision_inputs
+            )
+            print(f"value shape: {value.shape if value is not None else None}")
         else:
             value = None
 
         # rewards
         if self.remote_rm_url is not None:
-            # remote RM
-            print("\n=== Reward Model Inputs ===")
-            # 直接使用完整的sequences进行解码 
-            queries = self.tokenizer.batch_decode(sequences.cpu(), skip_special_tokens=False)
+            # Remote reward computation
+            print("\n=== Remote Reward Model Processing ===")
             
-            # 处理references
+            # Prepare sequences
+            queries = self.tokenizer.batch_decode(sequences.cpu(), skip_special_tokens=False)
+            print(f"Decoded {len(queries)} sequences")
+            
+            # Handle references if available
             references = None
             if hasattr(samples, "references") and samples.references is not None:
                 references = samples.references
-                print(f"References available: {len(references)}")
-                print(f"First few references: {references[:2]}")
-            else:
-                print("No references available")
+                print(f"Using {len(references)} references for reward computation")
+                print("Sample references:")
+                for i, ref in enumerate(references[:2]):
+                    print(f"  {i}: {ref[:100]}...")
             
-            print(f"Input sequence shape: {sequences.shape}")
-            print(f"Action mask shape: {action_mask.shape}")
-            print(f"Queries count: {len(queries)}")
-            print(f"First query:\n{queries[0]}")
-            print(f"Remote RM URL: {self.remote_rm_url}")
+            # Prepare vision data if available
+            vision_data = None
+            if hasattr(samples, 'pixel_values') and samples.pixel_values is not None:
+                vision_data = {
+                    'pixel_values': samples.pixel_values.cpu(),
+                }
+                if samples.image_grid_thws is not None:
+                    vision_data['image_grid_thw'] = samples.image_grid_thws.cpu()
+                print("\nIncluding vision data:")
+                print(f"- Pixel values shape: {vision_data['pixel_values'].shape}")
+                if 'image_grid_thw' in vision_data:
+                    print(f"- Image grid shape: {vision_data['image_grid_thw'].shape}")
             
+            # Log request details
+            print("\nRequest details:")
+            print(f"- Sequence shape: {sequences.shape}")
+            print(f"- Queries: {len(queries)}")
+            print(f"- References: {len(references) if references else 0}")
+            print(f"- Vision inputs: {'Yes' if vision_data else 'No'}")
+            print(f"- Remote RM URL: {self.remote_rm_url}")
+            
+            # Submit reward computation request
             r = remote_rm_fn(
-                self.remote_rm_url, 
+                self.remote_rm_url,
                 queries=queries,
-                references=references
+                references=references,
+                vision_data=vision_data
             ).to(device=action_log_probs.device)
+            
+            print(f"Reward computation completed, shape: {r.shape}")
         else:
             # local RM
             r = self.reward_model(sequences, attention_mask)
@@ -484,15 +631,22 @@ class NaiveExperienceMaker(ABC):
             self.critic.train()
 
         return Experience(
-            sequences,
-            action_log_probs,
-            value,
-            None,
-            None,
-            attention_mask,
-            action_mask,
-            info,
-            kl,
+            # Basic required fields (non-default parameters)
+            sequences=sequences,
+            action_log_probs=action_log_probs,
+            values=value,
+            attention_mask=attention_mask,
+            action_mask=action_mask,
+            info=info,
+            response_length=samples.response_length,
+            total_length=samples.total_length,
+            
+            # Optional fields (with default values)
+            returns=None,
+            advantages=None,
+            kl=kl,
+            pixel_values=pixel_values,
+            image_grid_thws=image_grid_thws
         )
 
     @torch.no_grad()
@@ -661,84 +815,80 @@ class RemoteExperienceMaker(NaiveExperienceMaker):
         Turn samples into experience by calculating logprobs, values, rewards, and kl divergence.
         """
         
-        print(f"===========samples: {samples}")
-        # print(f"===========Processing samples with images: {samples.images}")
-        # print(f"===========references: {samples.references}")
+        # Initialize performance tracking if needed
+        if self.strategy.args.perf:
+            print("\n=== Make Remote Experience Performance Stats ===")
+            print(f"Processing sample with shape: {samples.sequences.shape}")
+
         self.actor.eval()
         device = torch.cuda.current_device()
 
-        # extract values from samples
+        # Extract all sample values
         sequences = samples.sequences
         attention_mask = samples.attention_mask
         action_mask = samples.action_mask
         num_actions = samples.num_actions
         packed_seq_lens = samples.packed_seq_lens
+        pixel_values = samples.pixel_values
+        image_grid_thws = samples.image_grid_thws
 
         start = time.time()
-        sequences_cpu, attention_mask_cpu = (
-            sequences.to("cpu"),
-            attention_mask.to("cpu"),
-        )
 
-        # Get images from samples if available
-        images = samples.images if hasattr(samples, "images") else None
+        # Move tensors to CPU for remote operations
+        sequences_cpu = sequences.to("cpu")
+        attention_mask_cpu = attention_mask.to("cpu")
         
-        # log probs
+        # Prepare vision inputs if available
+        vision_inputs = {}
+        if pixel_values is not None:
+            pixel_values_cpu = pixel_values.to("cpu")
+            image_grid_thws_cpu = image_grid_thws.to("cpu")
+            vision_inputs.update({
+                "pixel_values": pixel_values_cpu,
+                "image_grid_thw": image_grid_thws_cpu
+            })
+            print("\n=== Vision Inputs ===")
+            print(f"pixel_values shape: {pixel_values.shape}")
+            print(f"image_grid_thws shape: {image_grid_thws.shape}")
+
+        # Get action log probs from actor
         print("\n=== Actor Forward ===")
-        print(f"Sequences shape: {sequences.shape}")
-        print(f"Images count: {len(images) if images else 0}")
         action_log_probs = self.actor(
-            sequences, 
-            num_actions, 
-            attention_mask, 
+            sequences=sequences,
+            num_actions=num_actions,
+            attention_mask=attention_mask,
             packed_seq_lens=packed_seq_lens,
-            images=images
+            **({k: v.to(device) for k, v in vision_inputs.items()} if vision_inputs else {})
         )
-        print(f"action_log_probs: {action_log_probs.shape}")
+        print(f"action_log_probs shape: {action_log_probs.shape}")
 
-        # init log probs
-        # Check model types and prepare images
-        initial_model_type = ray.get(self.initial_model.get_model_type.remote())
-        images_arg = images if initial_model_type == "qwen2_vl" else None
-        
-        # init log probs
+        # Get base action log probs from initial model
         print("\n=== Initial Model Forward ===")
-        print(f"Sequences shape: {sequences_cpu.shape}")
-        print(f"Images count: {len(images) if images else 0}")
         base_action_log_probs_ref = self.initial_model.forward.remote(
             sequences_cpu,
             num_actions,
             attention_mask_cpu,
-            images=images_arg,
             return_output=False,
             ring_attn_group=None,
-            packed_seq_lens=packed_seq_lens
+            packed_seq_lens=packed_seq_lens,
+            **vision_inputs
         )
-        print(f"base_action_log_probs_ref: {base_action_log_probs_ref}")
+        print(f"Submitted base_action_log_probs request")
 
-        # values
+        # Get critic value if available
         if self.critic is not None:
-            # Check if critic supports vision
-            critic_supports_vision = ray.get(self.critic.has_vision_support.remote())
-            
-            print(f"\n=== Critic Forward ===")
-            print(f"Critic supports vision: {critic_supports_vision}")
-            print(f"Sequences shape: {sequences_cpu.shape}")
-            print(f"Images count: {len(images) if images else 0}")
-            if images:
-                print(f"First few images: {images[:2]}")
-            
-            # Forward with vision support check
+            print("\n=== Critic Forward ===")
             value_ref = self.critic.forward.remote(
                 sequences_cpu,
                 num_actions,
                 attention_mask_cpu,
-                images=images if critic_supports_vision else None,
                 return_output=False,
                 ring_attn_group=None,
-                packed_seq_lens=packed_seq_lens
+                packed_seq_lens=packed_seq_lens,
+                **vision_inputs
             )
-            # avoid CUDA OOM when colocate models
+            print(f"Submitted value request")
+            
             if self.strategy.args.colocate_critic_reward:
                 ray.get([value_ref])
                 ray.get([self.critic.empty_cache.remote()])
@@ -749,17 +899,31 @@ class RemoteExperienceMaker(NaiveExperienceMaker):
             ray.get([base_action_log_probs_ref])
             ray.get([self.initial_model.empty_cache.remote()])
 
-        # rewards
+        # Process rewards
+        print("\n=== Processing Rewards ===")
         r_refs = []
-        # support remote RM API with ray
         if not self.remote_rm_url:
+            # Local reward model
             for rm in self.reward_model:
-                r_refs.append(rm.forward.remote(sequences_cpu, attention_mask_cpu, packed_seq_lens=packed_seq_lens))
+                # Check if reward model supports vision
+                rm_supports_vision = ray.get(rm.has_vision_support.remote()) if hasattr(rm, 'has_vision_support') else False
+                print(f"Reward Model vision support: {rm_supports_vision}")
+                
+                forward_inputs = {
+                    "sequences": sequences_cpu,
+                    "attention_mask": attention_mask_cpu,
+                    "packed_seq_lens": packed_seq_lens
+                }
+                if rm_supports_vision and vision_inputs:
+                    forward_inputs.update(vision_inputs)
+                
+                r_refs.append(rm.forward.remote(**forward_inputs))
         else:
-            # remote RM
+            # Remote reward model
             if not self.packing_samples:
                 queries = self.tokenizer.batch_decode(sequences_cpu, skip_special_tokens=False)
             else:
+                # Handle packed sequence decoding
                 sequences_list = []
                 offset = 0
                 tokens_list = sequences_cpu.tolist()[0]
@@ -768,39 +932,49 @@ class RemoteExperienceMaker(NaiveExperienceMaker):
                     offset += length
                 queries = self.tokenizer.batch_decode(sequences_list, skip_special_tokens=False)
 
-            references = None
-            if hasattr(samples, "references") and samples.references is not None:
-                references = samples.references
+            # Get references if available
+            references = samples.references if hasattr(samples, "references") else None
+            if references:
+                print(f"Including {len(references)} references for reward computation")
 
+            # Submit remote reward computation requests
             for rm in self.remote_rm_url:
-                print(f"Remote RM: {rm}")
-                print(f"Queries: {queries}")
-                print(f"References: {references}")
-                r = remote_rm_fn_ray.remote(rm, queries=queries, references=references)
+                print(f"Submitting to remote RM: {rm}")
+                r = remote_rm_fn_ray.remote(
+                    rm, 
+                    queries=queries,
+                    references=references,
+                    vision_data=vision_inputs if vision_inputs else None
+                )
                 r_refs.append(r)
-
 
         actor_value_rm_time = time.time() - start
 
-        # wait initial/critic/reward model done
+        # Wait for all remote operations to complete
+        print("\n=== Collecting Remote Results ===")
         start = time.time()
         ref_values = ray.get([base_action_log_probs_ref, value_ref] + r_refs)
         wait_time = time.time() - start
 
+        # Process results
         base_action_log_probs, value, rewards = ref_values[0], ref_values[1], ref_values[2:]
-        base_action_log_probs = base_action_log_probs.to(device)
-        if value is not None:
-            value = value.to(device)
-        rewards = [r.to(device) for r in rewards]
-        r = self.reward_fn(rewards) if len(rewards) > 0 else rewards[0]
+        
+        # Move results to correct device
+        base_action_log_probs = to(base_action_log_probs, device)
+        value = to(value, device) if value is not None else None
+        rewards = [to(r, device) for r in rewards]
+        
+        # Combine rewards if needed
+        r = self.reward_fn(rewards) if len(rewards) > 0 and self.reward_fn else rewards[0]
 
-        # avoid CUDA OOM when colocate models
+        # Memory management
         if self.strategy.args.colocate_critic_reward and not self.remote_rm_url:
             ray.get([self.reward_model[0].empty_cache.remote()])
-
         if self.strategy.args.colocate_actor_ref:
             torch.cuda.empty_cache()
 
+        # Compute KL divergence
+        print("\n=== Computing KL Divergence ===")
         kl = compute_approx_kl(
             action_log_probs,
             base_action_log_probs,
@@ -808,20 +982,19 @@ class RemoteExperienceMaker(NaiveExperienceMaker):
             use_kl_estimator_k3=self.strategy.args.use_kl_estimator_k3,
         )
 
+        # Process results based on packing mode
         if not self.packing_samples:
             kl_mean = masked_mean(kl, action_mask, dim=-1)
         else:
-            # convert tensor into list of tensors so that it's easier to manipulate
-            # within dataset.
             sequences = unpacking_samples(sequences, packed_seq_lens)
             attention_mask = None
             action_log_probs = unpacking_samples(action_log_probs, num_actions)
             if value is not None:
                 value = unpacking_samples(value, num_actions)
-
             kl = unpacking_samples(kl, num_actions)
             kl_mean = torch.tensor([each_kl.mean() for each_kl in kl], device=device)
 
+        # Prepare info dictionary
         info = {
             "kl": kl_mean,
             "reward": r,
@@ -830,23 +1003,33 @@ class RemoteExperienceMaker(NaiveExperienceMaker):
             "num_actions": num_actions,
         }
 
+        # Record performance stats
         if self.strategy.args.perf:
             self.perf_stats["actor_value_rm_time"] += actor_value_rm_time
             self.perf_stats["wait_time"] += wait_time
 
+        # Create and return experience
+        print("\n=== Creating Experience ===")
         experience = Experience(
-            sequences,
-            action_log_probs,
-            value,
-            None,
-            None,
-            attention_mask,
-            action_mask,
-            info,
-            kl,
+            # Basic required fields (non-default parameters)
+            sequences=sequences,
+            action_log_probs=action_log_probs,
+            values=value,
+            attention_mask=attention_mask,
+            action_mask=action_mask,
+            info=info,
+            response_length=samples.response_length,
+            total_length=samples.total_length,
+            
+            # Optional fields (default parameters)
+            returns=None,
+            advantages=None,
+            kl=kl,
+            pixel_values=pixel_values,
+            image_grid_thws=image_grid_thws
         )
 
-        self.actor.train()  # reset model state
+        self.actor.train()  # Reset model state
         return experience
 
     def _generate_vllm(self, all_prompts: List[str], images: Optional[List[str]] = None, references: Optional[List[str]] = None, **kwargs) -> List[Samples]:
@@ -1024,15 +1207,20 @@ class RemoteExperienceMaker(NaiveExperienceMaker):
                 
                 samples_list.append(
                     Samples(
+                        # Basic required fields
                         sequences=sequences,
-                        attention_mask=attention_mask,
-                        action_mask=action_mask,
                         num_actions=action_mask.size(1),
-                        packed_seq_lens=None,
                         response_length=action_mask.float().sum(dim=-1),
                         total_length=attention_mask.float().sum(dim=-1),
-                        images=current_batch_images,
-                        references=current_batch_references
+                        
+                        # Optional fields
+                        attention_mask=attention_mask,
+                        action_mask=action_mask,
+                        packed_seq_lens=None,
+                        
+                        # Additional metadata
+                        references=current_batch_references,
+                        images=current_batch_images
                     )
                 )
             else:
@@ -1096,15 +1284,20 @@ class RemoteExperienceMaker(NaiveExperienceMaker):
                 print(f"- Total tokens: {sum(packed_seq_lens)}")
                 
                 samples = Samples(
+                    # Basic required fields
                     sequences=sequences,
-                    attention_mask=attention_mask,
-                    action_mask=None,
                     num_actions=response_lengths,
-                    packed_seq_lens=packed_seq_lens,
                     response_length=torch.tensor(response_lengths, device="cuda", dtype=torch.float),
                     total_length=torch.tensor(total_lengths, device="cuda", dtype=torch.float),
-                    images=current_batch_images if current_batch_images else None,
-                    references=current_batch_references if current_batch_references else None
+                    
+                    # Optional fields
+                    attention_mask=attention_mask,
+                    action_mask=None,
+                    packed_seq_lens=packed_seq_lens,
+                    
+                    # Additional metadata
+                    references=current_batch_references if current_batch_references else None,
+                    images=current_batch_images if current_batch_images else None
                 )
                 samples_list.append(samples)
         return samples_list
