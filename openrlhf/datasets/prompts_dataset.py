@@ -5,6 +5,7 @@ from tqdm import tqdm
 from typing import Union, Tuple, Optional
 
 def preprocess_data(data, input_template=None, input_key="input", image_key=None, apply_chat_template=None) -> Union[str, Tuple[str, Optional[str]]]:
+    # First get the prompt text
     if apply_chat_template:
         chat = data[input_key]
         if isinstance(chat, str):
@@ -14,8 +15,15 @@ def preprocess_data(data, input_template=None, input_key="input", image_key=None
         prompt = data[input_key]
         if input_template:
             prompt = input_template.format(prompt)
+            
     # Handle image path if provided
-    image_path = data.get(image_key) if image_key else None
+    image_path = None
+    if image_key and image_key in data:
+        image_path = data[image_key]
+        print(f"\n=== Processing data entry ===")
+        print(f"Input text: {prompt[:100]}...")
+        print(f"Image path: {image_path}")
+        
     return (prompt, image_path) if image_path else prompt
 
 
@@ -53,8 +61,18 @@ class PromptDataset(Dataset):
         self.images = []  # New: Store image paths
         self.references = []
         reference_key = getattr(self.strategy.args, "reference_key", "reference")
-        for data in tqdm(dataset, desc="Preprocessing data", disable=not self.strategy.is_rank_0()):
-            result = preprocess_data(data, input_template, input_key, image_key, apply_chat_template)
+        print("\n=== Initializing PromptDataset ===")
+        print(f"First few entries: {dataset[:2]}")
+        
+        for i, data in tqdm(
+            enumerate(dataset), 
+            desc="Preprocessing data", 
+            disable=not self.strategy.is_rank_0()
+        ):
+            result = preprocess_data(
+                data, input_template, input_key, image_key, apply_chat_template
+            )
+            
             if isinstance(result, tuple):
                 prompt, image_path = result
                 self.prompts.append(prompt)
@@ -62,7 +80,15 @@ class PromptDataset(Dataset):
             else:
                 self.prompts.append(result)
                 self.images.append(None)
-            self.references.append(data.get(reference_key, None))  # 读取reference
+            
+            reference = data.get(reference_key)
+            self.references.append(reference)
+            
+            if i < 2:  # Print first few entries for debugging
+                print(f"\nEntry {i}:")
+                print(f"Prompt: {prompt[:100]}...")
+                print(f"Image: {image_path if image_path else 'None'}")
+                print(f"Reference: {reference}")
 
     def __len__(self):
         length = len(self.prompts)

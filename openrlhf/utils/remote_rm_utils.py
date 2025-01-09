@@ -49,6 +49,7 @@ def remote_rm_fn(api_url, queries, references=None, score_key="rewards"):
         data["references"] = references
         
     scores = request_api_wrapper(api_url, data, score_key)
+    # print(f"Remote reward model info:\n data: {data}, scores: {scores}")
     return torch.tensor(scores)
 
 

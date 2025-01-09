@@ -13,6 +13,8 @@ from openrlhf.utils.deepspeed import DeepspeedStrategy
 
 from openrlhf.trainer.ray.utils import ray_noset_visible_devices
 
+from qwen_vl_utils import process_vision_info
+
 class DistributedTorchRayActor:
     def __init__(self, world_size, rank, master_addr, master_port):
         logging.basicConfig(
@@ -62,8 +64,14 @@ class BasePPORole(DistributedTorchRayActor):
 
 @ray.remote(num_gpus=1)
 class ReferenceModelRayActor(BasePPORole):
+    @ray.method(num_returns=1)
+    def get_model_type(self):
+        """Return the model type (e.g. 'causal_lm' or 'qwen2_vl')."""
+        return self.model_type
+
     def init_model_from_pretrained(self, strategy: DeepspeedStrategy, pretrain):
         self._setup_distributed(strategy)
+        self.model_type = strategy.args.model_type  # Store model type
         model = Actor(
             pretrain,
             use_flash_attention_2=strategy.args.flash_attn,
@@ -87,18 +95,181 @@ class ReferenceModelRayActor(BasePPORole):
         num_actions: int = None,
         attention_mask: Optional[torch.Tensor] = None,
         return_output=False,
+        ring_attn_group=None,
         packed_seq_lens: Optional[list[int]] = None,
+        images: Optional[List[str]] = None,
     ) -> torch.Tensor:
+        """Forward pass for reference model."""
         device = torch.cuda.current_device()
+        
+        print(f"\n=== Reference Model Forward ===")
+        print(f"Batch size: {sequences.size(0)}")
+        print(f"Sequence length: {sequences.size(1)}")
+        
+        # Move inputs to device
+        sequences = sequences.to(device)
+        if attention_mask is not None:
+            attention_mask = attention_mask.to(device)
+            
         with torch.no_grad():
-            log_probs = self.model(
-                sequences.to(device),
-                num_actions,
-                attention_mask.to(device),
-                return_output=return_output,
-                packed_seq_lens=packed_seq_lens,
-            )
-        return log_probs.to("cpu")
+            try:
+                # For Qwen2-VL processing
+                if images and hasattr(self.model, 'processor'):
+                    # Validate image count
+                    if packed_seq_lens is not None:
+                        assert len(images) == len(packed_seq_lens), \
+                            f"Images count ({len(images)}) must match packed sequences count ({len(packed_seq_lens)})"
+                    else:
+                        assert len(images) == sequences.size(0), \
+                            f"Images count ({len(images)}) must match batch size ({sequences.size(0)})"
+                    
+                    print("\n=== Image Processing ===")
+                    print(f"Images count: {len(images)}")
+                    print(f"First few images: {images[:2]}")
+                    
+                    # Create batch messages
+                    batch_messages = []
+                    if packed_seq_lens is not None:
+                        offset = 0
+                        for i, length in enumerate(packed_seq_lens):
+                            sequence = sequences[0, offset:offset + length]
+                            message = {"role": "user", "content": []}
+                            
+                            # Add image(s)
+                            img_paths = images[i] if isinstance(images[i], list) else [images[i]]
+                            for img_path in img_paths:
+                                message["content"].append({
+                                    "type": "image",
+                                    "image": img_path
+                                })
+                            
+                            # Add text
+                            text = self.model.processor.decode(sequence)
+                            message["content"].append({
+                                "type": "text",
+                                "text": text
+                            })
+                            batch_messages.append(message)
+                            offset += length
+                    else:
+                        for i in range(sequences.size(0)):
+                            message = {"role": "user", "content": []}
+                            
+                            # Add image(s)
+                            img_paths = images[i] if isinstance(images[i], list) else [images[i]]
+                            for img_path in img_paths:
+                                message["content"].append({
+                                    "type": "image",
+                                    "image": img_path
+                                })
+                            
+                            # Add text
+                            text = self.model.processor.decode(sequences[i])
+                            message["content"].append({
+                                "type": "text",
+                                "text": text
+                            })
+                            batch_messages.append(message)
+                    
+                    print(f"\n=== Batch Processing ===")
+                    print(f"Processing {len(batch_messages)} messages")
+                    print(f"Message structure:")
+                    for i, msg in enumerate(batch_messages[:2]):
+                        print(f"Message {i}:")
+                        content = msg["content"]
+                        print(f"- Content types: {[c['type'] for c in content]}")
+                        print(f"- Images: {sum(1 for c in content if c['type'] == 'image')}")
+                    
+                    texts = [
+                        self.model.processor.apply_chat_template([msg], tokenize=False, add_generation_prompt=True)
+                        for msg in batch_messages
+                    ]
+                    
+                    # Process vision info with validation
+                    print("\n=== Validating Image Inputs ===")
+                    print(f"Batch size: {len(batch_messages)}")
+                    print(f"Images count: {len(images)}")
+                    
+                    # Ensure image paths exist
+                    valid_images = []
+                    for img_list in images:
+                        valid_img_list = []
+                        for img_path in img_list:
+                            if isinstance(img_path, str) and os.path.exists(img_path):
+                                valid_img_list.append(img_path)
+                            else:
+                                print(f"Warning: Invalid image path - {img_path}")
+                        valid_images.append(valid_img_list)
+                    
+                    print(f"Valid images count: {sum(len(img_list) for img_list in valid_images)}")
+                    
+                    # Process vision info
+                    image_inputs, video_inputs = process_vision_info(batch_messages)
+                    
+                    # Validate image grid dimensions
+                    if hasattr(image_inputs, 'shape'):
+                        print(f"Image inputs shape: {image_inputs.shape}")
+                        if image_inputs.shape[0] != len(batch_messages):
+                            print(f"Adjusting image inputs from {image_inputs.shape[0]} to {len(batch_messages)}")
+                            image_inputs = image_inputs[:len(batch_messages)]
+                    
+                    # Generate inputs through processor
+                    print("\n=== Processor Inputs ===")
+                    print(f"Texts count: {len(texts)}")
+                    print(f"Images count: {len(image_inputs) if image_inputs is not None else 0}")
+                    print(f"Videos count: {len(video_inputs) if video_inputs is not None else 0}")
+                    
+                    model_inputs = self.model.processor(
+                        text=texts,
+                        images=image_inputs,
+                        videos=video_inputs,
+                        padding=True,
+                        return_tensors="pt"
+                    ).to(device)
+                    
+                    # Validate model inputs
+                    print("\n=== Model Inputs Validation ===")
+                    for key, value in model_inputs.items():
+                        if isinstance(value, torch.Tensor):
+                            print(f"{key}: shape {value.shape}")
+                        elif isinstance(value, list):
+                            print(f"{key}: length {len(value)}")
+                    
+                    # Validate image grid size
+                    if 'image_grid_thw' in model_inputs:
+                        grid_size = model_inputs['image_grid_thw'].size(0) if isinstance(model_inputs['image_grid_thw'], torch.Tensor) else len(model_inputs['image_grid_thw'])
+                        batch_size = sequences.size(0)
+                        if grid_size != batch_size:
+                            # Adjust image grid size to match batch size
+                            if isinstance(model_inputs['image_grid_thw'], torch.Tensor):
+                                model_inputs['image_grid_thw'] = model_inputs['image_grid_thw'][:batch_size]
+                            else:
+                                model_inputs['image_grid_thw'] = model_inputs['image_grid_thw'][:batch_size]
+                    
+                    # Get model output
+                    output = self.model(**model_inputs)
+                    log_probs = output["logits"].to(torch.float32)
+                else:
+                    # Regular forward pass for non-VL models
+                    output = self.model(
+                        sequences,
+                        attention_mask=attention_mask,
+                        return_output=return_output,
+                        ring_attn_group=ring_attn_group,
+                        packed_seq_lens=packed_seq_lens,
+                    )
+                    log_probs = output
+                
+                print("\nForward pass completed successfully")
+                return log_probs.to("cpu")
+            
+            except Exception as e:
+                print(f"\nError in forward pass: {str(e)}")
+                print(f"Sequences shape: {sequences.shape}")
+                print(f"Images count: {len(images) if images else 0}")
+                if images:
+                    print(f"First few images: {images[:2]}")
+                raise
 
     def empty_cache(self) -> None:
         torch.cuda.empty_cache()

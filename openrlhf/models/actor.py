@@ -14,25 +14,6 @@ from .utils import log_probs_from_logits, reset_position_ids
 
 
 class Actor(nn.Module):
-    """
-    Base class for Actor models in reinforcement learning.
-
-    This class serves as a foundation for implementing various actor models, which are responsible for selecting actions based on the policy learned from the environment.
-
-    Args:
-        pretrain_or_model (nn.Module): A pretrained model or a new model instance to be used as the actor.
-        use_flash_attention_2 (bool, optional): Whether to utilize Flash Attention 2.0 for improved performance. Defaults to False.
-        bf16 (bool, optional): Enable bfloat16 precision for model computations. Defaults to True.
-        load_in_4bit (bool, optional): Load the model in 4-bit precision. Defaults to False.
-        lora_rank (int, optional): Rank for LoRA adaptation. Defaults to 0.
-        lora_alpha (int, optional): Alpha parameter for LoRA. Defaults to 16.
-        lora_dropout (float, optional): Dropout rate for LoRA layers. Defaults to 0.
-        target_modules (list, optional): List of target modules for applying LoRA. Defaults to None.
-        ds_config (dict, optional): Configuration for DeepSpeed, enabling model partitioning across multiple GPUs. Defaults to None.
-        device_map (dict, optional): Device mapping for loading the model onto specific devices. Defaults to None.
-        packing_samples (bool, optional): Whether to pack samples during training. Defaults to False.
-    """
-
     def __init__(
         self,
         pretrain_or_model,
@@ -46,16 +27,15 @@ class Actor(nn.Module):
         ds_config=None,
         device_map=None,
         packing_samples=False,
-        model_type="causal_lm",  # New: Specify model type
+        model_type="causal_lm",  
         **kwargs,
     ) -> None:
         super().__init__()
-
+        self.model_type = model_type
+        
         if isinstance(pretrain_or_model, str):
             attn_implementation = "flash_attention_2" if use_flash_attention_2 else "eager"
 
-            # Note: dschf is defined in function scope to avoid global effects
-            # https://huggingface.co/docs/transformers/deepspeed#non-trainer-deepspeed-integration
             if ds_config is not None and ds_config["zero_optimization"]["stage"] == 3:
                 dschf = HfDeepSpeedConfig(ds_config)
             else:
@@ -90,17 +70,12 @@ class Actor(nn.Module):
                     torch_dtype=torch.bfloat16 if bf16 else "auto",
                     device_map=device_map,
                 )
-                # Initialize processor for vision
                 self.processor = AutoProcessor.from_pretrained(pretrain_or_model)
             else:
                 raise ValueError(f"Unsupported model type: {model_type}")
 
-            # Store model type for later use
-            self.model_type = model_type
-
-            # LoRA
+            # LoRA and other configurations...
             if lora_rank > 0:
-                # https://github.com/huggingface/peft/issues/137
                 self.model.enable_input_require_grads()
                 lora_config = LoraConfig(
                     task_type=TaskType.CAUSAL_LM,
@@ -122,17 +97,7 @@ class Actor(nn.Module):
                             if hasattr(module, "weight"):
                                 module = module.to(torch.bfloat16)
 
-            # MoE - balancing loss
-            model_config = self.model.config.to_dict()
-            if "output_router_logits" in model_config:
-                print("[MoE] set output_router_logits as True")
-                self.model.config.output_router_logits = True
-
-            # https://github.com/huggingface/transformers/issues/26877
-            # Use `model.generate(use_cache=True)` instead.`
             self.model.config.use_cache = False
-
-            # packing samples using Flash Attention 2
             self.packing_samples = packing_samples
         else:
             self.model = pretrain_or_model
@@ -142,60 +107,163 @@ class Actor(nn.Module):
         Tuple[torch.LongTensor, torch.LongTensor],
         Tuple[torch.LongTensor, torch.LongTensor, torch.BoolTensor],
     ]:
-        generate_args = {
-            "input_ids": input_ids,
-            "top_k": kwargs.get("top_k", None),
-            "top_p": kwargs.get("top_p", None),
-            "do_sample": kwargs.get("do_sample", True),
-            "early_stopping": True,
-            "temperature": kwargs.get("temperature", 1),
-            "use_cache": True,
-            "num_beams": kwargs.get("num_beams", 1),
-            "attention_mask": kwargs.get("attention_mask"),
-            "eos_token_id": kwargs.get("eos_token_id"),
-            "pad_token_id": kwargs.get("pad_token_id"),
-            "min_new_tokens": kwargs.get("min_new_tokens", 1),
-        }
+        if self.model_type == "qwen2_vl" and 'images' in kwargs and kwargs['images'] is not None:
+            # Prepare batch data for vision-language model
+            batch_size = input_ids.size(0)
+            print(f"\n=== Qwen2 VL Generate ===")
+            print(f"Batch size: {batch_size}")
+            print(f"Images available: {len(kwargs['images'])}")
+            
+            assert len(kwargs['images']) == batch_size, \
+                f"Images count ({len(kwargs['images'])}) must match batch size ({batch_size})"
+            
+            # Prepare batch messages
+            batch_messages = []
+            for i in range(batch_size):
+                # Create message with system role
+                message = [
+                    {"role": "system", "content": "You are a helpful assistant."},
+                    {"role": "user", "content": []}
+                ]
+                
+                # Add images if available
+                if kwargs['images'] is not None:
+                    img_paths = kwargs['images'][i] if isinstance(kwargs['images'][i], list) else [kwargs['images'][i]]
+                    for img_path in img_paths:
+                        message[1]["content"].append({
+                            "type": "image",
+                            "image": img_path
+                        })
+                
+                # Add text
+                text = self.processor.decode(input_ids[i])
+                message[1]["content"].append({
+                    "type": "text",
+                    "text": text
+                })
+                batch_messages.append(message)
 
-        if kwargs.get("max_new_tokens", None):
-            generate_args["max_new_tokens"] = kwargs.get("max_new_tokens")
-        if kwargs.get("max_length", None):
-            generate_args["max_length"] = kwargs.get("max_length")
+            # Process batch inputs
+            texts = [
+                self.processor.apply_chat_template(msg, tokenize=False, add_generation_prompt=True)
+                for msg in batch_messages
+            ]
+            image_inputs, video_inputs = process_vision_info([msg[1] for msg in batch_messages])
+            model_inputs = self.processor(
+                text=texts,
+                images=image_inputs,
+                videos=video_inputs,
+                padding=True,
+                return_tensors="pt"
+            ).to(input_ids.device)
 
-        # Call generate
-        sequences = self.model.generate(**generate_args)
+            # Configure generation arguments
+            gen_kwargs = {
+                "do_sample": True,
+                "temperature": kwargs.get("temperature", 0.7),
+                "top_p": kwargs.get("top_p", 0.9),
+                "top_k": kwargs.get("top_k", 50),
+                "min_new_tokens": max(kwargs.get("min_new_tokens", 1), 1),
+                "max_new_tokens": min(kwargs.get("max_new_tokens", 1024), 1024),
+                "eos_token_id": kwargs.get("eos_token_id"),
+                "pad_token_id": kwargs.get("pad_token_id"),
+                "use_cache": True,
+            }
 
-        # Prepare mask tensor
-        eos_token_id = generate_args["eos_token_id"]
-        pad_token_id = generate_args["pad_token_id"]
+            # Handle beam search settings
+            num_beams = kwargs.get("num_beams", 1)
+            if num_beams > 1:
+                gen_kwargs.update({
+                    "num_beams": num_beams,
+                    "early_stopping": True,
+                    "length_penalty": 1.0,
+                    "no_repeat_ngram_size": 3,
+                    "temperature": min(gen_kwargs["temperature"], 0.7),
+                })
+            else:
+                gen_kwargs.update({
+                    "num_beams": 1,
+                    "max_time": 30.0,
+                })
 
+            # Update model inputs with generation settings
+            model_inputs.update(gen_kwargs)
+            
+            # Generate sequences
+            sequences = self.model.generate(**model_inputs)
+
+            # Process sequences
+            input_length = model_inputs.input_ids.size(1)
+            generated_length = sequences.size(1)
+            
+            if generated_length <= input_length:
+                raise ValueError(
+                    f"Generated sequence ({generated_length}) must be longer than "
+                    f"input ({input_length}). Check generation parameters."
+                )
+        else:
+            # Regular language model generation
+            generate_args = {
+                "input_ids": input_ids,
+                "top_k": kwargs.get("top_k", None),
+                "top_p": kwargs.get("top_p", None),
+                "do_sample": kwargs.get("do_sample", True),
+                "temperature": kwargs.get("temperature", 1),
+                "use_cache": True,
+                "attention_mask": kwargs.get("attention_mask"),
+                "eos_token_id": kwargs.get("eos_token_id"),
+                "pad_token_id": kwargs.get("pad_token_id"),
+                "min_new_tokens": kwargs.get("min_new_tokens", 1),
+            }
+            
+            if kwargs.get("max_new_tokens", None):
+                generate_args["max_new_tokens"] = kwargs.get("max_new_tokens")
+            if kwargs.get("max_length", None):
+                generate_args["max_length"] = kwargs.get("max_length")
+
+            sequences = self.model.generate(**generate_args)
+
+        # Process sequences
+        eos_token_id = kwargs.get("eos_token_id")
+        pad_token_id = kwargs.get("pad_token_id") 
         return self.process_sequences(sequences, input_ids.size(1), eos_token_id, pad_token_id)
 
     def process_sequences(self, sequences: torch.Tensor, input_len, eos_token_id, pad_token_id):
+        """Process generated sequences to create attention and action masks."""
+        print(f"\n=== Processing Sequences ===")
+        print(f"Sequences shape: {sequences.shape}")
+        print(f"Input length: {input_len}")
+        
+        # Validate sequence length
+        if sequences.size(1) <= input_len:
+            raise ValueError(f"Generated sequence length ({sequences.size(1)}) must be greater than input length ({input_len})")
+
+        # Create attention mask
         attention_mask = (sequences.ne(eos_token_id) & sequences.ne(pad_token_id)).to(dtype=torch.long)
         seq_length = attention_mask.size(1)
 
-        # The following code is equivalent to:
-        #
-        # for i in range(attention_mask.size(0)):
-        #     for t in reversed(range(seq_length)):
-        #         if attention_mask[i][t] > 0.5:
-        #             attention_mask[i][min(t + 1, seq_length - 1)] = True
-        #             sequences[i][min(t + 1, seq_length - 1)] = eos_token_id
-        #             break
-        #
+        # Find EOS positions
         eos_indices = seq_length - attention_mask.long().fliplr().argmax(dim=1, keepdim=True).clamp(min=1)
         sequences.scatter_(dim=1, index=eos_indices, value=eos_token_id)
 
-        # For Llama3 and Qwen2 models, there are some eos_tokens in the middle of the prompt.
+        # Process token positions
         first_token_indices = attention_mask.long().argmax(dim=1, keepdim=True)
         mask = torch.arange(seq_length).unsqueeze(0).expand(sequences.size(0), -1).to(device=sequences.device)
         attention_mask = (mask >= first_token_indices) & (mask <= eos_indices).to(dtype=torch.long)
-
-        # in RL, state_i (current token) + action_i (next token) -> state_i+1 (next token)
+        
+        # Create action mask for response tokens
+        response_length = sequences.size(1) - input_len + 1
+        if response_length <= 0:
+            raise ValueError(f"No response tokens available: sequence_length={sequences.size(1)}, input_length={input_len}")
+            
         state_seq = sequences[:, input_len - 1 : -1]
         action_mask = state_seq.ne(eos_token_id) & state_seq.ne(pad_token_id)
-        action_mask[:, 0] = 1
+        
+        # Always set first response token position to 1 if response exists
+        if action_mask.size(1) > 0:
+            action_mask[:, 0] = 1
+        else:
+            raise ValueError("Action mask has zero width - no valid response tokens")
 
         return sequences, attention_mask, action_mask
 
@@ -207,68 +275,100 @@ class Actor(nn.Module):
         return_output=False,
         ring_attn_group: Optional[dist.ProcessGroup] = None,
         packed_seq_lens: Optional[list[int]] = None,
-        images: Optional[List[str]] = None,  # New: Support image inputs
+        images: Optional[List[str]] = None,
+        image_grid_thw: Optional[torch.LongTensor] = None,
+        rope_deltas: Optional[torch.LongTensor] = None,
     ) -> torch.Tensor:
         """Returns action log probs"""
-        if not self.packing_samples:
-            # https://github.com/OpenRLHF/OpenRLHF/issues/217
-            position_ids = attention_mask.long().cumsum(-1) - 1
-            position_ids.masked_fill_(attention_mask == 0, 1)
-        else:
-            # convert attention_mask to position_ids
-            if ring_attn_group is not None:
-                sequences, attention_mask, position_ids = convert_ring_attn_params(
-                    sequences, attention_mask, packed_seq_lens, ring_attn_group
-                )
-            else:
-                position_ids = reset_position_ids(attention_mask)
-            # explicitly ignore attention_mask for packing_samples
-            attention_mask = None
-
         if self.model_type == "qwen2_vl" and images is not None:
-            # Process images for multi-modal input in batch
-            batch_size = sequences.size(0)
+            # Create batch messages
             batch_messages = []
-            
-            for i in range(batch_size):
-                message = {"role": "user", "content": []}
-                # Assume images is a list of lists, where each inner list contains images for one sequence
-                if i < len(images):
-                    for img_path in images[i]:
-                        message["content"].append({
+            for i in range(sequences.size(0)):
+                message = [
+                    {"role": "system", "content": "You are a helpful assistant."},
+                    {"role": "user", "content": []}
+                ]
+                
+                # Add images
+                if images[i]:
+                    img_paths = images[i] if isinstance(images[i], list) else [images[i]]
+                    for img_path in img_paths:
+                        message[1]["content"].append({
                             "type": "image",
                             "image": img_path
                         })
-                message["content"].append({
+                
+                # Add text
+                text = self.processor.decode(sequences[i])
+                message[1]["content"].append({
                     "type": "text",
-                    "text": self.processor.decode(sequences[i])
+                    "text": text
                 })
                 batch_messages.append(message)
+
+            # Process inputs
+            texts = [
+                self.processor.apply_chat_template(msg, tokenize=False, add_generation_prompt=True)
+                for msg in batch_messages
+            ]
             
-            # Process inputs for each sequence in batch
-            batch_inputs = []
-            for message in batch_messages:
-                text = self.processor.apply_chat_template([message], tokenize=False, add_generation_prompt=True)
-                image_inputs, video_inputs = process_vision_info([message])
-                inputs = self.processor(
-                    text=[text],
-                    images=image_inputs,
-                    videos=video_inputs,
-                    padding=True,
-                    return_tensors="pt"
-                ).to(sequences.device)
-                batch_inputs.append(inputs)
+            # Process vision info
+            image_inputs, video_inputs = process_vision_info([msg[1] for msg in batch_messages])
             
-            # Combine batch inputs
-            combined_inputs = {
-                key: torch.cat([inputs[key] for inputs in batch_inputs], dim=0)
-                for key in batch_inputs[0].keys()
-            }
-            
-            output = self.model(**combined_inputs)
+            # Create model inputs
+            model_inputs = self.processor(
+                text=texts,
+                images=image_inputs,
+                videos=video_inputs,
+                padding=True,
+                return_tensors="pt"
+            ).to(sequences.device)
+
+            # Add additional Qwen2-VL specific parameters
+            if image_grid_thw is not None:
+                model_inputs["image_grid_thw"] = image_grid_thw
+            if rope_deltas is not None:
+                model_inputs["rope_deltas"] = rope_deltas
+
+            # Forward pass with additional parameters
+            output = self.model(
+                **model_inputs,
+                output_attentions=False,
+                output_hidden_states=False,
+                return_dict=True
+            )
         else:
-            output = self.model(sequences, attention_mask=attention_mask, position_ids=position_ids)
-        # https://github.com/OpenRLHF/OpenRLHF/pull/634
+            # Non-vision model or no images provided
+            if not self.packing_samples:
+                position_ids = attention_mask.long().cumsum(-1) - 1
+                position_ids.masked_fill_(attention_mask == 0, 1)
+            else:
+                if ring_attn_group is not None:
+                    sequences, attention_mask, position_ids = convert_ring_attn_params(
+                        sequences, attention_mask, packed_seq_lens, ring_attn_group
+                    )
+                else:
+                    position_ids = reset_position_ids(attention_mask)
+                attention_mask = None
+
+            # Prepare model inputs
+            model_inputs = {
+                "input_ids": sequences,
+                "attention_mask": attention_mask,
+                "position_ids": position_ids,
+                "output_attentions": False,
+                "output_hidden_states": False,
+                "return_dict": True
+            }
+
+            # Add optional parameters if provided
+            if image_grid_thw is not None:
+                model_inputs["image_grid_thw"] = image_grid_thw
+            if rope_deltas is not None:
+                model_inputs["rope_deltas"] = rope_deltas
+
+            output = self.model(**model_inputs)
+
         output["logits"] = output["logits"].to(torch.float32)
 
         if num_actions is None:

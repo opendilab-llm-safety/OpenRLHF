@@ -1,4 +1,4 @@
-from typing import Optional, Union
+from typing import List, Optional, Union
 
 import deepspeed
 import torch
@@ -258,7 +258,9 @@ def _get_critic_model(base_pretrained_model, base_llm_model, value_head_prefix="
             num_actions: Optional[Union[int, list[int]]] = None,
             attention_mask: Optional[torch.Tensor] = None,
             return_output=False,
+            ring_attn_group=None,
             packed_seq_lens=None,
+            images: Optional[List[str]] = None,
         ) -> torch.Tensor:
             if not self.packing_samples:
                 # https://github.com/OpenRLHF/OpenRLHF/issues/217

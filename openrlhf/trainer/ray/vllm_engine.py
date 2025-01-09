@@ -1,9 +1,13 @@
 import ray
 from ray.util.placement_group import placement_group
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
+from transformers import AutoProcessor
+import PIL.Image
+import base64
+import os
+from io import BytesIO
 
 from openrlhf.trainer.ray.utils import ray_noset_visible_devices
-
 from openrlhf.utils.logging_utils import init_logger
 
 logger = init_logger(__name__)
@@ -12,7 +16,6 @@ logger = init_logger(__name__)
 @ray.remote
 def get_all_env_variables():
     import os
-
     return os.environ
 
 
@@ -26,11 +29,15 @@ class LLMRayActor:
 
         noset_visible_devices = kwargs.pop("noset_visible_devices", False)
         self.use_gpu_executor = kwargs["tensor_parallel_size"] == 1 and not noset_visible_devices
+        model_name = args[0] if args else kwargs.get("model", None)
 
+        # Configure for multi-modal models
+        if "vl" in model_name.lower():
+            kwargs["limit_mm_per_prompt"] = {"image": 4}  # Support up to 4 images per prompt
+        
         # See https://github.com/vllm-project/vllm/blob/main/vllm/executor/gpu_executor.py
         if self.use_gpu_executor:
             from openrlhf.trainer.ray.vllm_worker_wrap import WorkerWrap
-
             vllm.worker.worker.Worker = WorkerWrap
         else:
             # RayGPUExecutor
@@ -52,9 +59,55 @@ class LLMRayActor:
                 RayWorkerWrapperPath.RayWorkerWrapper = RayWorkerWrapper
 
         self.llm = vllm.LLM(*args, **kwargs)
+        
+        # Load processor for multi-modal models if needed
+        if model_name and "vl" in model_name.lower():
+            self.processor = AutoProcessor.from_pretrained(model_name)
+        else:
+            self.processor = None
 
     def generate(self, *args, **kwargs):
-        return self.llm.generate(*args, **kwargs)
+        if self.processor and "images" in kwargs:
+            # Handle multi-modal input
+            images = kwargs.pop("images", None)
+            prompt_token_ids = kwargs.pop("prompt_token_ids", None)
+
+            if not prompt_token_ids:
+                return self.llm.generate(*args, **kwargs)
+
+            # Create requests list
+            requests = []
+            if images:
+                print(f"\n=== VLLM Generate ===")
+                print(f"Processing {len(prompt_token_ids)} sequences")
+                print(f"Images available: {len(images)}")
+
+            # Process each sample
+            for i, tokens in enumerate(prompt_token_ids):
+                request = {"prompt_token_ids": tokens}
+                
+                # Add images if available for this sample
+                if images and i < len(images) and images[i]:
+                    loaded_images = []
+                    img_paths = images[i] if isinstance(images[i], list) else [images[i]]
+                    
+                    print(f"Sample {i} images: {img_paths}")
+                    for img_path in img_paths:
+                        try:
+                            img = PIL.Image.open(img_path).convert('RGB')
+                            loaded_images.append(img)
+                        except Exception as e:
+                            logger.warning(f"Failed to load image {img_path}: {e}")
+                    
+                    if loaded_images:
+                        request["multi_modal_data"] = {"image": loaded_images}
+                        print(f"Added {len(loaded_images)} images to sample {i}")
+                
+                requests.append(request)
+
+            return self.llm.generate(requests, **kwargs)
+        else:
+            return self.llm.generate(*args, **kwargs)
 
     def init_process_group(self, master_address, master_port, rank_offset, world_size, group_name, backend):
         if self.use_gpu_executor:
@@ -107,7 +160,9 @@ def create_vllm_engines(
             ray.get(pg.ready())
 
             scheduling_strategy = PlacementGroupSchedulingStrategy(
-                placement_group=pg, placement_group_capture_child_tasks=True, placement_group_bundle_index=0
+                placement_group=pg,
+                placement_group_capture_child_tasks=True,
+                placement_group_bundle_index=0
             )
 
         vllm_engines.append(

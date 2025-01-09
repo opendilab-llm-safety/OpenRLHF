@@ -215,6 +215,7 @@ def create_app(args):
                 )
             
             scores = reward_model.get_reward(data)
+            logger.info(f"Scores: {scores}")
             return JSONResponse(content={"rewards": scores})
         except Exception as e:
             logger.error(f"Error processing request: {e}")
@@ -236,7 +237,7 @@ def test_service(host: str, port: int, max_retries: int = 5, retry_interval: flo
         bool: 服务是否正常运行
     """
     test_data = {
-        "queries": ["这是一个测试对话"],
+        "queries": ["1+2=?"],
         "references": ["这是一个测试参考答案"],
     }
     

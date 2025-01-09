@@ -1,6 +1,6 @@
 import math
 import os
-from typing import Dict, Optional, Union
+from typing import Dict, Optional, Union, List
 
 import ray
 import torch
@@ -63,10 +63,25 @@ class CriticPPOTrainer(PPOTrainer):
 
 @ray.remote(num_gpus=1)
 class CriticModelRayActor(BasePPORole):
+    @ray.method(num_returns=1)
+    def get_model_type(self):
+        """Return the model type (e.g. 'causal_lm' or 'qwen2_vl')."""
+        return self.model_type
+
+    @ray.method(num_returns=1)
+    def has_vision_support(self):
+        """Check if critic model supports vision input."""
+        return hasattr(self, 'processor') and self.model_type == "qwen2_vl"
+
     def init_model_from_pretrained(self, strategy: DeepspeedStrategy, pretrain, max_steps):
         args = strategy.args
-
+        self.model_type = args.model_type  # Store model_type from args
         self._setup_distributed(strategy)
+        
+        # Initialize processor for vision models
+        if args.model_type == "qwen2_vl":
+            from transformers import AutoProcessor
+            self.processor = AutoProcessor.from_pretrained(pretrain)
         critic = get_llm_for_sequence_regression(
             pretrain,
             "critic",
@@ -152,14 +167,29 @@ class CriticModelRayActor(BasePPORole):
         sequences: torch.LongTensor,
         num_actions: Optional[Union[int, list[int]]] = None,
         attention_mask: Optional[torch.Tensor] = None,
+        images: Optional[List[str]] = None,
+        return_output: bool = False,
+        ring_attn_group=None,
         packed_seq_lens=None,
     ) -> torch.Tensor:
         """Generates critic values."""
         device = torch.cuda.current_device()
         self.critic.eval()
         with torch.no_grad():
+            if images and self.model_type == "qwen2_vl":
+                print(f"\n=== Critic Forward with Vision ===")
+                print(f"Sequences shape: {sequences.shape}")
+                print(f"Images count: {len(images)}")
+                print(f"First few images: {images[:2]}")
+                
             value = self.critic(
-                sequences.to(device), num_actions, attention_mask.to(device), packed_seq_lens=packed_seq_lens
+                sequences.to(device),
+                num_actions,
+                attention_mask.to(device),
+                images=images if hasattr(self, 'processor') else None,
+                return_output=return_output,
+                ring_attn_group=ring_attn_group,
+                packed_seq_lens=packed_seq_lens
             )
         self.critic.train()  # reset model state
         return value.to("cpu")

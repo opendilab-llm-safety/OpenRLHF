@@ -64,21 +64,25 @@ ray job submit --address=http://${MASTER_NODE_IP}:$RAY_DASHBOARD_PORT \
     --critic_num_gpus_per_node 1 \
     --actor_num_nodes 1 \
     --actor_num_gpus_per_node 1 \
-    --vllm_num_engines 1 \
+    --vllm_num_engines 0 \
     --vllm_tensor_parallel_size 1 \
     --colocate_actor_ref \
     --pretrain /mnt/hwfile/llm-safety/models/huggingface/Qwen/Qwen2-VL-2B-Instruct \
     --remote_rm_url $RM_SERVICE_URL \
     --save_path /mnt/hwfile/llm-safety/checkpoints/Qwen2-VL-2B-Instruct-PPO-MathV360K \
+    --save_value_network \
+    --eval_steps 1 \
+    --save_steps 1 \
     --input_key prompt \
     --reference_key response \
     --model_type qwen2_vl \
     --image_key image \
     --apply_chat_template \
-    --micro_train_batch_size 64 \
-    --train_batch_size 128 \
-    --micro_rollout_batch_size 64 \
-    --rollout_batch_size 128 \
+    --num_episodes 3 \
+    --micro_train_batch_size 4 \
+    --train_batch_size 16 \
+    --micro_rollout_batch_size 4 \
+    --rollout_batch_size 16 \
     --max_epochs 1 \
     --prompt_max_len 10000 \
     --generate_max_len 20000 \
@@ -87,12 +91,11 @@ ray job submit --address=http://${MASTER_NODE_IP}:$RAY_DASHBOARD_PORT \
     --actor_learning_rate 5e-7 \
     --critic_learning_rate 9e-6 \
     --init_kl_coef 0.01 \
-    --prompt_data /mnt/hwfile/llm-safety/datasets/MathV360K/train_samples_all_tuning_1000.json \
+    --prompt_data /mnt/hwfile/llm-safety/datasets/MathV360K/train_samples_all_tuning_10000.json \
     --normalize_reward \
     --adam_offload \
     --flash_attn \
     --gradient_checkpointing \
-    --packing_samples \
     --vllm_sync_backend nccl \
     --max_norm 1.0 \
     --eps_clip 0.2 \

@@ -178,6 +178,15 @@ class ActorPPOTrainer(PPOTrainer):
 
 @ray.remote(num_gpus=1)
 class ActorModelRayActor(BasePPORole):
+    @ray.method(num_returns=1)
+    def get_model_type(self):
+        """Return the model type (e.g. 'causal_lm' or 'qwen2_vl')."""
+        return self.model_type if hasattr(self, 'model_type') else 'causal_lm'
+
+    @ray.method(num_returns=1)
+    def has_vision_support(self):
+        """Check if the model supports vision/image inputs."""
+        return hasattr(self, 'processor') and self.model_type == 'qwen2_vl'
     def init_model_from_pretrained(self, strategy: DeepspeedStrategy, pretrain):
         args = strategy.args
 
@@ -202,6 +211,7 @@ class ActorModelRayActor(BasePPORole):
             packing_samples=strategy.args.packing_samples,
             model_type=strategy.args.model_type,  # Pass model_type for multi-modal support
         )
+        self.model_type = strategy.args.model_type  # Store model_type as instance variable
         strategy.print(actor)
 
         # configure tokenizer
