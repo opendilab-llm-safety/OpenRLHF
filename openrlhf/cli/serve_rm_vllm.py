@@ -181,6 +181,7 @@ class RewardModelProxy:
             batch_scores = self._process_batch(batch_queries, batch_references)
             scores.extend(batch_scores)
             
+        logger.info(f"Scores: {scores}")
         return scores
 
 def create_app(args):
@@ -235,9 +236,25 @@ def test_service(host: str, port: int, max_retries: int = 5, retry_interval: flo
     Returns:
         bool: 服务是否正常运行
     """
+    # 构造多个测试用例，涵盖不同复杂度的场景
+    test_cases = [
+        {
+            "dialog": "<|im_start|>user\n1+1等于多少？\n<|im_end|>\n<|im_start|>assistant\n1+1等于2\n<|im_end|>",
+            "reference": "1+1等于2"
+        },
+        {
+            "dialog": "<|im_start|>user\n用Python写一个计算斐波那契数列的函数\n<|im_end|>\n<|im_start|>assistant\ndef fibonacci(n):\n    if n <= 0:\n        return 0\n    elif n == 1:\n        return 1\n    else:\n        return fibonacci(n-1) + fibonacci(n-2)\n<|im_end|>",
+            "reference": "def fibonacci(n):\n    if n <= 0:\n        return 0\n    elif n == 1:\n        return 1\n    else:\n        return fibonacci(n-1) + fibonacci(n-2)"
+        },
+        {
+            "dialog": "<|im_start|>user\n实现一个完整的Python类来管理学生信息，包含添加、删除、查询和统计平均分等功能\n<|im_end|>\n<|im_start|>assistant\nclass StudentManager:\n    def __init__(self):\n        self.students = {}\n\n    def add_student(self, student_id, name, scores):\n        if student_id in self.students:\n            raise ValueError(f\"学生ID {student_id} 已存在\")\n        self.students[student_id] = {\n            'name': name,\n            'scores': scores\n        }\n\n    def remove_student(self, student_id):\n        if student_id not in self.students:\n            raise ValueError(f\"学生ID {student_id} 不存在\")\n        del self.students[student_id]\n\n    def get_student(self, student_id):\n        if student_id not in self.students:\n            raise ValueError(f\"学生ID {student_id} 不存在\")\n        return self.students[student_id]\n\n    def get_average_score(self, student_id=None):\n        if student_id:\n            student = self.get_student(student_id)\n            return sum(student['scores']) / len(student['scores'])\n        \n        if not self.students:\n            return 0.0\n            \n        total = sum(sum(s['scores']) / len(s['scores']) \n                    for s in self.students.values())\n        return total / len(self.students)\n<|im_end|>",
+            "reference": "class StudentManager:\n    def __init__(self):\n        self.students = {}\n\n    def add_student(self, student_id, name, scores):\n        if student_id in self.students:\n            raise ValueError(f\"学生ID {student_id} 已存在\")\n        self.students[student_id] = {\n            'name': name,\n            'scores': scores\n        }\n\n    def remove_student(self, student_id):\n        if student_id not in self.students:\n            raise ValueError(f\"学生ID {student_id} 不存在\")\n        del self.students[student_id]\n\n    def get_student(self, student_id):\n        if student_id not in self.students:\n            raise ValueError(f\"学生ID {student_id} 不存在\")\n        return self.students[student_id]\n\n    def get_average_score(self, student_id=None):\n        if student_id:\n            student = self.get_student(student_id)\n            return sum(student['scores']) / len(student['scores'])\n        \n        if not self.students:\n            return 0.0\n            \n        total = sum(sum(s['scores']) / len(s['scores']) \n                    for s in self.students.values())\n        return total / len(self.students)"
+        }
+    ]
+    
     test_data = {
-        "queries": ["这是一个测试对话"],
-        "references": ["这是一个测试参考答案"],
+        "queries": [case["dialog"] for case in test_cases],
+        "references": [case["reference"] for case in test_cases]
     }
     
     url = f"http://{host}:{port}/get_reward"
